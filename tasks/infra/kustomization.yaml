@@ -9,3 +9,6 @@ resources:
   - delete-osd-task.yaml
   - wait-till-osd-is-deleted-task.yaml
   - provision-osd-gcp-task.yaml
+  - rosa-login-task.yaml
+  - provision-rosa-task.yaml
+  - delete-rosa-task.yaml
