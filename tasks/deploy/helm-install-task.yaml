@@ -25,6 +25,10 @@ spec:
     - description: Kuadrant operator name. 'kuadrant-operator' or 'rhcl-operator'
       name: operator-name
       type: string
+    - description: true or false. If set to true testsuite-dependencies will also be installed
+      name: testsuite-dependencies
+      type: string
+      default: true
   steps:
   - name: helm-install-operators
     args:
@@ -38,7 +42,7 @@ spec:
       - --set=istio.istioProvider=$(params.istio-provider)
       - --set=gatewayAPI.version=$(params.gateway-crd)
       - --set=tools.keycloak.operator.channel=$(params.keycloak-channel)
-      - --set=tools.enabled=true
+      - --set=tools.enabled=$(params.testsuite-dependencies)
       - --wait
       - --debug
       - kuadrant-operators
@@ -65,7 +69,7 @@ spec:
       - --set=istio.istioProvider=$(params.istio-provider)
       - --set=gatewayAPI.version=$(params.gateway-crd)
       - --set=tools.keycloak.operator.channel=$(params.keycloak-channel)
-      - --set=tools.enabled=true
+      - --set=tools.enabled=$(params.testsuite-dependencies)
       - --timeout=10m0s
       - --wait
       - --debug
