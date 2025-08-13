@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+- pairs:
+    deployment: kuadrant-qe-pipeline-update-kuadrant-nightly
+    app: deploy-kuadrant-nightly-update
+
+resources:
+- ../../../tasks/deploy/nightly-image-date-task.yaml
+- ../../../tasks/deploy/check-image-existence-task.yaml
+- ../../../tasks/main/kubectl-login-task.yaml
+- ../../../tasks/deploy/uninstall-task.yaml
+- ../../../tasks/deploy/helm-install-task.yaml
+- eventlistener.yaml
+- trigger-nightly-update.yaml
+- pipeline.yaml

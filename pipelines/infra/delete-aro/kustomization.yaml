@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+- pairs:
+    deployment: kuadrant-qe-pipeline
+    app: infra-delete-aro
+
+resources:
+  - ../../../tasks/infra/cluster-secret-cleanup-task.yaml
+  - ../../../tasks/infra/delete-aro-task.yaml
+  - pipeline.yaml

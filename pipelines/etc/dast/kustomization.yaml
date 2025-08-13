@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+- pairs:
+    deployment: kuadrant-qe-pipeline
+    app: etc-dast
+
+resources:
+  - ../../../tasks/login/kubectl-login-task.yaml
+  - ../../../tasks/dast/clone-rapidast-repo-task.yaml
+  - ../../../tasks/dast/compose-config-file-task.yaml
+  - ../../../tasks/dast/rapidast-scan-task.yaml
+  - ../../../tasks/dast/rapidast-cleanup-task.yaml
+  - pipeline.yaml
