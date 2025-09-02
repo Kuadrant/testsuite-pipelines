@@ -323,19 +323,6 @@ spec:
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
-    - name: helm-uninstall
-      params:
-        - name: kubeconfig-path
-          value: $(tasks.kubectl-login.results.kubeconfig-path)
-      runAfter:
-        - kubectl-login
-        - check-image-existence
-      taskRef:
-        kind: Task
-        name: helm-uninstall
-      workspaces:
-        - name: shared-workspace
-          workspace: shared-workspace
     - name: prepare-for-rhcl-rc-install
       when:
         - input: "$(params.operator-name)"
@@ -348,14 +335,15 @@ spec:
         - name: kubeconfig-path
           value: $(tasks.kubectl-login.results.kubeconfig-path)
       runAfter:
-        - helm-uninstall
+        - kubectl-login
+        - check-image-existence
       taskRef:
         kind: Task
         name: prepare-for-rhcl-rc-install
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
-    - name: helm-install
+    - name: helm-deploy
       params:
         - name: index-image
           value: $(params.index-image)
@@ -378,11 +366,12 @@ spec:
         - name: additional-helm-tools-flags
           value: $(params.additional-helm-tools-flags)
       runAfter:
-        - helm-uninstall
+        - kubectl-login
+        - check-image-existence
         - prepare-for-rhcl-rc-install
       taskRef:
         kind: Task
-        name: helm-install
+        name: helm-deploy
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
@@ -391,7 +380,7 @@ spec:
         - name: kubeconfig-path
           value: $(tasks.kubectl-login.results.kubeconfig-path)
       runAfter:
-        - helm-install
+        - helm-deploy
       taskRef:
         kind: Task
         name: operator-pod-restart
@@ -448,23 +437,6 @@ spec:
         name: upload-results
       workspaces:
         - name: shared-workspace
-    - name: helm-uninstall-cleanup
-      when:
-        - input: $(params.cleanup)
-          operator: in
-          values: ["true"]
-      params:
-        - name: kubeconfig-path
-          value: $(tasks.kubectl-login.results.kubeconfig-path)
-      runAfter:
-        - upload-results
-        - run-tests
-      taskRef:
-        kind: Task
-        name: helm-uninstall
-      workspaces:
-        - name: shared-workspace
-          workspace: shared-workspace
     - name: delete-osd
       when:
         - input: $(params.cleanup)
@@ -477,7 +449,8 @@ spec:
         - name: cluster-id
           value: $(tasks.get-cluster-id.results.cluster-id)
       runAfter:
-        - helm-uninstall-cleanup
+        - upload-results
+        - run-tests
       taskRef:
         kind: Task
         name: delete-osd
@@ -499,7 +472,8 @@ spec:
         - name: aws-credentials
           value: $(tasks.parameter-sanity-check.results.provider-credentials)
       runAfter:
-        - helm-uninstall-cleanup
+        - upload-results
+        - run-tests
       taskRef:
         kind: Task
         name: delete-rosa
@@ -514,7 +488,8 @@ spec:
         - name: cluster-name
           value: $(params.cluster-name)
       runAfter:
-        - helm-uninstall-cleanup
+        - upload-results
+        - run-tests
       taskRef:
         kind: Task
         name: cluster-secret-cleanup
