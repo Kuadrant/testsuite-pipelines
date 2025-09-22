@@ -37,6 +37,7 @@ spec:
         kubectl config use-context ctx
 
         echo -n ${KUBECONFIG} | tee $(results.kubeconfig-path.path)
+
         export OCP_VERSION=$(kubectl get clusterversion -o jsonpath='{.items[].status.history[0].version}')
         echo -n ${OCP_VERSION%.*} | tee $(results.ocp-version.path)
       computeResources:
