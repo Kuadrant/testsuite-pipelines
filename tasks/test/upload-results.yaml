@@ -22,6 +22,9 @@ spec:
     - description: OCP cluster version
       name: ocp-version
       type: string
+    - description: Path to workspace kubeconfig (required to store multiple clusters in the workspace for multi-cluster tests)
+      name: kubeconfig-path
+      type: string
   steps:
     - args:
         - make reportportal
@@ -34,6 +37,8 @@ spec:
           cpu: '250m'
           memory: 128Mi
       env:
+        - name: KUBECONFIG
+          value: $(params.kubeconfig-path)
         - name: WORKSPACE
           value: $(workspaces.shared-workspace.path)
         - name: RP_LAUNCH_NAME

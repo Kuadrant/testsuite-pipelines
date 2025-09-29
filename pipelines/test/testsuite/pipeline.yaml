@@ -109,6 +109,8 @@ spec:
           value: $(params.rp-project)
         - name: ocp-version
           value: $(tasks.kubectl-login.results.ocp-version)
+        - name: kubeconfig-path
+          value: $(tasks.kubectl-login.results.kubeconfig-path)
       taskRef:
         kind: Task
         name: upload-results
