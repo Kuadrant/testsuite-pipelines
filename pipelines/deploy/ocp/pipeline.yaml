@@ -1,34 +1,38 @@
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
-  name: test-aro
+  name: deploy-ocp
 spec:
   params:
 # Cluster related parameters
-    - default: true
-      description: 'If not set to "true" then existing cluster will be used. The cluster must be created via OCM/HCC.'
-      name: provision-cluster
+    - name: aws-credentials
       type: string
-    - default: kua-azure-credentials
-      description: Name of secret that contains credentials for Azure Service Principal
-      name: azure-credentials
+    - name: cluster-name
       type: string
-    - default: aro-pull-secret
-      description: Pull secret for ARO
-      name: aro-pull-secret
+    - name: pull-secret
       type: string
-    - default: kua-aro
-      description: ARO cluster name
-      name: cluster-name
+      default: aro-pull-secret # Need to rename this to pull-secret
+    - name: base-domain
       type: string
-    - default: eastus
-      description: Location for the cluster (region)
-      name: location
+      default: "aws.kua.app-services-dev.net"
+    - name: ssh-key
       type: string
-    - default: '--master-vm-size Standard_D8s_v3 --worker-vm-size Standard_D4s_v3 --worker-count 3 --worker-vm-disk-size-gb 128 --pod-cidr 10.128.0.0/14 --service-cidr 172.30.0.0/16 --tags owner=kua-pipeline --debug'
-      description: 'Flags to be used for `az aro create cluster` command. Do not provide resource group (-g), cluster name (-n), location, pull-secret, master-subnet, worker-subnet, vnet, client-id, client-secret flags here.'
-      name: create-cmd-flags
+      default: ssh-public-key
+    - name: region
       type: string
+      default: "us-east-1"
+    - name: master-size
+      type: string
+      default: "m6g.xlarge"
+    - name: worker-size
+      type: string
+      default: "m6g.large"
+    - name: installer-arch
+      type: string
+      default: "arm64"
+    - name: osia-settings
+      type: string
+      default: osia-default-settings
 # Kuadrant/RHCL installation related parameters
     - default: quay.io/kuadrant/kuadrant-operator-catalog:v1.2.0
       description: Kuadrant/RHCL index image, leave empty to install current RHCL GA
@@ -53,6 +57,10 @@ spec:
     - default: stable-v26
       description: Keycloak subscription channel
       name: keycloak-channel
+      type: string
+    - default: ""
+      description: Extensions binary image
+      name: extensions-binary-image
       type: string
     - default: ""
       description: Additional flags for helm install command, example '--set=kuadrant.installPlanApproval=Manual --set=kuadrant.startingCSV=kuadrant-operator.v1.2.0'
@@ -88,7 +96,7 @@ spec:
       name: additional-env
       type: string
 # Report Portal related parameters
-    - default: full-cycle-aro
+    - default: full-cycle-ocp-aws
       description: Prefix of the launch name saved in report portal (nightly, username, manual, etc.). In case of release candidate testing use kuadrant-v<version>, rhcl-v<version>, or authorino-v<version>
       name: launch-name
       type: string
@@ -111,84 +119,36 @@ spec:
       type: string
   workspaces:
     - name: shared-workspace
+      description: "Workspace to store cluster state files"
   tasks:
-    - name: provision-aro
+    - name: provision-aws-ocp
       params:
-        - name: azure-credentials
-          value: $(params.azure-credentials)
-        - name: create-cmd-flags
-          value: $(params.create-cmd-flags)
+        - name: aws-credentials
+          value: $(params.aws-credentials)
         - name: cluster-name
           value: $(params.cluster-name)
-        - name: aro-pull-secret
-          value: $(params.aro-pull-secret)
-        - name: location
-          value: $(params.location)
-        - name: provision-cluster
-          value: $(params.provision-cluster)
-      taskRef:
-        kind: Task
-        name: provision-aro
-    - name: wait-for-valid-certificates
-      params:
-        - name: console-url
-          value: $(tasks.provision-aro.results.console-url)
-        - name: api-url
-          value: $(tasks.provision-aro.results.api-url)
-      taskRef:
-        kind: Task
-        name: wait-for-valid-certificates
-      runAfter:
-        - provision-aro
-      workspaces:
-        - name: shared-workspace
-    - name: check-image-existence
-      when:
-        - input: "$(params.index-image)"
-          operator: notin
-          values: ['']
-      params:
-        - name: index-image
-          value: $(params.index-image)
-      taskRef:
-        kind: Task
-        name: check-image-existence
-    - name: kubectl-login
-      params:
-        - name: kube-api
-          value: $(tasks.provision-aro.results.api-url)
-        - name: testsuite-image
-          value: 'quay.io/kuadrant/testsuite-pipelines-tools:latest'
-        - name: cluster-credentials
-          value: $(tasks.provision-aro.results.credentials-secret)
-      runAfter:
-        - wait-for-valid-certificates
-      taskRef:
-        kind: Task
-        name: kubectl-login
+        - name: pull-secret
+          value: $(params.pull-secret)
+        - name: base-domain
+          value: $(params.base-domain)
+        - name: region
+          value: $(params.region)
+        - name: master-size
+          value: $(params.master-size)
+        - name: worker-size
+          value: $(params.worker-size)
+        - name: ssh-key
+          value: $(params.ssh-key)
+        - name: installer-arch
+          value: $(params.installer-arch)
+        - name: osia-settings
+          value: $(params.osia-settings)
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
-    - name: prepare-for-rhcl-rc-install
-      when:
-        - input: "$(params.operator-name)"
-          operator: in
-          values: ['rhcl-operator']
-        - input: "$(params.index-image)"
-          operator: notin
-          values: ['']
-      params:
-        - name: kubeconfig-path
-          value: $(tasks.kubectl-login.results.kubeconfig-path)
-      runAfter:
-        - kubectl-login
-        - check-image-existence
       taskRef:
         kind: Task
-        name: prepare-for-rhcl-rc-install
-      workspaces:
-        - name: shared-workspace
-          workspace: shared-workspace
+        name: provision-aws-ocp
     - name: helm-deploy
       retries: 3
       params:
@@ -201,34 +161,22 @@ spec:
         - name: operator-name
           value: $(params.operator-name)
         - name: kubeconfig-path
-          value: $(tasks.kubectl-login.results.kubeconfig-path)
+          value: $(tasks.provision-aws-ocp.results.kubeconfig-path)
         - name: gateway-crd
           value: $(params.gateway-crd)
         - name: keycloak-channel
           value: $(params.keycloak-channel)
+        - name: extensions-binary-image
+          value: $(params.extensions-binary-image)
         - name: additional-helm-flags
           value: $(params.additional-helm-flags)
         - name: additional-helm-tools-flags
           value: $(params.additional-helm-tools-flags)
       runAfter:
-        - kubectl-login
-        - check-image-existence
-        - prepare-for-rhcl-rc-install
+        - provision-aws-ocp
       taskRef:
         kind: Task
         name: helm-deploy
-      workspaces:
-        - name: shared-workspace
-          workspace: shared-workspace
-    - name: operator-pod-restart
-      params:
-        - name: kubeconfig-path
-          value: $(tasks.kubectl-login.results.kubeconfig-path)
-      runAfter:
-        - helm-deploy
-      taskRef:
-        kind: Task
-        name: operator-pod-restart
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
@@ -247,11 +195,11 @@ spec:
         - name: additional-env
           value: $(params.additional-env)
         - name: kubeconfig-path
-          value: $(tasks.kubectl-login.results.kubeconfig-path)
+          value: $(tasks.provision-aws-ocp.results.kubeconfig-path)
         - name: cluster-credentials
-          value: $(tasks.provision-aro.results.credentials-secret)
+          value: $(tasks.provision-aws-ocp.results.credentials-secret)
       runAfter:
-        - operator-pod-restart
+        - helm-deploy
       taskRef:
         kind: Task
         name: run-tests
@@ -274,7 +222,7 @@ spec:
         - name: rp-project
           value: $(params.rp-project)
         - name: ocp-version
-          value: $(tasks.kubectl-login.results.ocp-version)
+          value: $(tasks.provision-aws-ocp.results.ocp-version)
       runAfter:
         - run-tests
       taskRef:
@@ -282,48 +230,23 @@ spec:
         name: upload-results
       workspaces:
         - name: shared-workspace
-    - name: helm-uninstall-cleanup
+    - name: delete-aws-ocp
       when:
         - input: $(params.cleanup)
           operator: in
-          values: [ "true" ]
-      params:
-        - name: kubeconfig-path
-          value: $(tasks.kubectl-login.results.kubeconfig-path)
+          values: ["true"]
       runAfter:
         - upload-results
-        - run-tests
-      taskRef:
-        kind: Task
-        name: helm-uninstall
+      params:
+        - name: cluster-name
+          value: $(params.cluster-name)
+        - name: aws-credentials
+          value: $(params.aws-credentials)
+        - name: osia-settings
+          value: $(params.osia-settings)
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
-    - name: delete-aro
-      when:
-        - input: $(params.cleanup)
-          operator: in
-          values: ["true"]
-      params:
-        - name: cluster-name
-          value: $(params.cluster-name)
-        - name: azure-credentials
-          value: $(params.azure-credentials)
-      runAfter:
-        - helm-uninstall-cleanup
       taskRef:
         kind: Task
-        name: delete-aro
-    - name: cluster-secret-cleanup
-      when:
-        - input: $(params.cleanup)
-          operator: in
-          values: ["true"]
-      params:
-        - name: cluster-name
-          value: $(params.cluster-name)
-      runAfter:
-        - helm-uninstall-cleanup
-      taskRef:
-        kind: Task
-        name: cluster-secret-cleanup
+        name: delete-aws-ocp

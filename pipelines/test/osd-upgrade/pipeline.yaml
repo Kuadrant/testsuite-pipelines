@@ -67,10 +67,6 @@ spec:
       name: keycloak-channel
       type: string
     - default: ""
-      description: Extensions binary image
-      name: extensions-binary-image
-      type: string
-    - default: ""
       description: Additional flags for helm install command, example '--set=kuadrant.installPlanApproval=Manual --set=kuadrant.startingCSV=kuadrant-operator.v1.2.0'
       name: additional-helm-flags
       type: string
@@ -374,8 +370,6 @@ spec:
           value: $(params.gateway-crd)
         - name: keycloak-channel
           value: $(params.keycloak-channel)
-        - name: extensions-binary-image
-          value: $(params.extensions-binary-image)
         - name: additional-helm-flags
           value: $(params.additional-helm-flags)
         - name: additional-helm-tools-flags
@@ -427,7 +421,7 @@ spec:
         name: run-tests
       workspaces:
         - name: shared-workspace
-    - name: pause-pipeline
+    - name: pause-pipeline-pre-upgrade
       runAfter:
         - run-tests-pre-upgrade
       taskRef:
@@ -438,12 +432,18 @@ spec:
         - name: kubeconfig-path
           value: $(tasks.kubectl-login.results.kubeconfig-path)
       runAfter:
-        - pause-pipeline
+        - pause-pipeline-pre-upgrade
       taskRef:
         kind: Task
         name: upgrade-to-latest
       workspaces:
         - name: shared-workspace
+    - name: pause-pipeline-post-upgrade
+      runAfter:
+        - upgrade-to-latest
+      taskRef:
+        kind: Task
+        name: pause-pipeline
     - name: run-tests-post-upgrade
       params:
         - name: testsuite-image
@@ -463,7 +463,7 @@ spec:
         - name: cluster-credentials
           value: $(tasks.get-osd-credentials.results.credentials-secret)
       runAfter:
-        - upgrade-to-latest
+        - pause-pipeline-post-upgrade
       taskRef:
         kind: Task
         name: run-tests
