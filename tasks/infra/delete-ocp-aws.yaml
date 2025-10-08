@@ -1,0 +1,72 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: delete-aws-ocp
+spec:
+  description: Delete AWS OCP cluster
+  params:
+    - name: aws-credentials
+      type: string
+    - name: cluster-name
+      type: string
+    - name: osia-settings
+      type: string
+      description: "Name of the ConfigMap containing the osia settings"
+  workspaces:
+    - name: shared-workspace
+      description: "Shared workspace to access cluster state files from provision task"
+      mountPath: /workspace
+  volumes:
+    - name: osia-settings-volume
+      configMap:
+        name: $(params.osia-settings)
+  steps:
+    - computeResources:
+        limits:
+          cpu: '150m'
+          memory: 400Mi
+      env:
+        - name: AWS_ACCOUNT_ID
+          valueFrom:
+            secretKeyRef:
+              key: AWS_ACCOUNT_ID
+              name: $(params.aws-credentials)
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              key: AWS_ACCESS_KEY_ID
+              name: $(params.aws-credentials)
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              key: AWS_SECRET_ACCESS_KEY
+              name: $(params.aws-credentials)
+      image: quay.io/acristur/osia:latest
+      imagePullPolicy: Always
+      name: delete-aws-ocp
+      volumeMounts:
+        - name: osia-settings-volume
+          mountPath: /workspace/settings.yaml
+          subPath: settings.yaml
+          readOnly: true
+      command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+          
+          # Create AWS credentials file
+          mkdir -p ~/.aws
+          cat > ~/.aws/credentials <<EOF
+          [default]
+          aws_access_key_id = ${AWS_ACCESS_KEY_ID}
+          aws_secret_access_key = ${AWS_SECRET_ACCESS_KEY}
+          EOF
+          
+        
+          # Run osia clean
+          osia clean \
+            --cluster-name $(params.cluster-name) \
+            --skip-git
+    
+      
