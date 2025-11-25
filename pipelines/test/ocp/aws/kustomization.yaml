@@ -7,9 +7,9 @@ labels:
       app: deploy-kuadrant
 
 components:
-  - ../../../tasks/deploy/
-  - ../../../tasks/infra/
-  - ../../../tasks/test/
+  - ../../../../tasks/deploy/
+  - ../../../../tasks/infra/
+  - ../../../../tasks/test/
 
 resources:
   - pipeline.yaml

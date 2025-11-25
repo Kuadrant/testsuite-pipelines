@@ -1,7 +1,7 @@
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
-  name: provision-aws-ocp
+  name: provision-ocp-aws
 spec:
   description: 'Provisions OCP'
   params:
@@ -92,7 +92,7 @@ spec:
           mountPath: /etc/ssh-key
           readOnly: true
         - name: osia-settings-volume
-          mountPath: /workspace/settings.yaml
+          mountPath: /settings.yaml
           subPath: settings.yaml
           readOnly: true
       command:
@@ -120,7 +120,7 @@ spec:
             --installers-dir /workspace/installers \
             --base-domain $(params.base-domain) \
             --pull-secret-file /etc/pull-secret/.dockerconfigjson \
-            --ssh-key-file /etc/ssh-key/ssh-key \
+            --ssh-key-file /etc/ssh-key/id_ed25519.pub \
             --master-flavor $(params.master-size) \
             --worker-flavor $(params.worker-size) \
             --list-of-regions $(params.region) \
