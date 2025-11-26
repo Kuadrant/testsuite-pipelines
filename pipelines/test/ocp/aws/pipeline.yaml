@@ -5,19 +5,8 @@ metadata:
 spec:
   params:
     # Cluster related parameters
-    - name: aws-credentials
-      type: string
     - name: cluster-name
       type: string
-    - name: pull-secret
-      type: string
-      default: aro-pull-secret # Need to rename this to pull-secret
-    - name: base-domain
-      type: string
-      default: "aws.kua.app-services-dev.net"
-    - name: ssh-key
-      type: string
-      default: ssh-public-key
     - name: region
       type: string
       default: "us-east-1"
@@ -30,9 +19,6 @@ spec:
     - name: installer-arch
       type: string
       default: "arm64"
-    - name: osia-settings
-      type: string
-      default: osia-default-settings
     # Kuadrant/RHCL installation related parameters
     - default: quay.io/kuadrant/kuadrant-operator-catalog:v1.2.0
       description: Kuadrant/RHCL index image, leave empty to install current RHCL GA
@@ -57,10 +43,6 @@ spec:
     - default: stable-v26
       description: Keycloak subscription channel
       name: keycloak-channel
-      type: string
-    - default: ""
-      description: Extensions binary image
-      name: extensions-binary-image
       type: string
     - default: ""
       description: Additional flags for helm install command, example '--set=kuadrant.installPlanApproval=Manual --set=kuadrant.startingCSV=kuadrant-operator.v1.2.0'
@@ -123,26 +105,16 @@ spec:
   tasks:
     - name: provision-ocp-aws
       params:
-        - name: aws-credentials
-          value: $(params.aws-credentials)
         - name: cluster-name
           value: $(params.cluster-name)
-        - name: pull-secret
-          value: $(params.pull-secret)
-        - name: base-domain
-          value: $(params.base-domain)
         - name: region
           value: $(params.region)
         - name: master-size
           value: $(params.master-size)
         - name: worker-size
           value: $(params.worker-size)
-        - name: ssh-key
-          value: $(params.ssh-key)
         - name: installer-arch
           value: $(params.installer-arch)
-        - name: osia-settings
-          value: $(params.osia-settings)
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
@@ -166,8 +138,6 @@ spec:
           value: $(params.gateway-crd)
         - name: keycloak-channel
           value: $(params.keycloak-channel)
-        - name: extensions-binary-image
-          value: $(params.extensions-binary-image)
         - name: additional-helm-flags
           value: $(params.additional-helm-flags)
         - name: additional-helm-tools-flags
@@ -230,7 +200,7 @@ spec:
         name: upload-results
       workspaces:
         - name: shared-workspace
-    - name: delete-aws-ocp
+    - name: delete-ocp-aws
       when:
         - input: $(params.cleanup)
           operator: in
@@ -240,13 +210,9 @@ spec:
       params:
         - name: cluster-name
           value: $(params.cluster-name)
-        - name: aws-credentials
-          value: $(params.aws-credentials)
-        - name: osia-settings
-          value: $(params.osia-settings)
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
       taskRef:
         kind: Task
-        name: delete-aws-ocp
+        name: delete-ocp-aws
