@@ -1,0 +1,76 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: delete-ocp-aws
+spec:
+  description: Delete AWS OCP cluster
+  params:
+    - name: cluster-name
+      type: string
+      description: "Name of the ConfigMap containing the osia settings"
+  workspaces:
+    - name: shared-workspace
+      description: "Shared workspace to persist cluster state files between tasks"
+  volumes:
+    - name: gitlab-ca
+      configMap:
+        name: gitlab-ca
+  steps:
+    - computeResources:
+        limits:
+          cpu: '150m'
+          memory: 400Mi
+      env:
+        - name: AWS_ACCOUNT_ID
+          valueFrom:
+            secretKeyRef:
+              key: AWS_ACCOUNT_ID
+              name: kua-aws-credentials
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              key: AWS_ACCESS_KEY_ID
+              name: kua-aws-credentials
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              key: AWS_SECRET_ACCESS_KEY
+              name: kua-aws-credentials
+        - name: CLUSTER_MANAGEMENT_CI_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: CLUSTER_MANAGEMENT_CI_TOKEN
+              name: cluster-management-ci-token
+      image: quay.io/acristur/osia:latest
+      imagePullPolicy: Always
+      name: delete-aws-ocp
+      volumeMounts:
+        - name: gitlab-ca
+          mountPath: /etc/pki/ca-trust/source/anchors
+          readOnly: true
+      command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+
+          # Prepare git repository
+          update-ca-trust
+          CI_TOKEN=$(echo "$CLUSTER_MANAGEMENT_CI_TOKEN" | tr -d '\n')
+          git clone "https://ci_robot_account:$CI_TOKEN@gitlab.cee.redhat.com/kuadrant-qe/cluster-management.git"
+          git config --global user.email ci-robot-account@redhat.com
+          git config --global user.name "CI Robot"
+
+          # Create AWS credentials file
+          mkdir -p ~/.aws
+          cat > ~/.aws/credentials <<EOF
+          [default]
+          aws_access_key_id = ${AWS_ACCESS_KEY_ID}
+          aws_secret_access_key = ${AWS_SECRET_ACCESS_KEY}
+          EOF
+        
+          # Run osia clean
+          cd cluster-management
+          osia clean --cluster-name $(params.cluster-name) 
+    
+      
