@@ -4,12 +4,12 @@ kind: Kustomization
 labels:
   - pairs:
       deployment: kuadrant-qe-pipeline
-      app: deploy-kuadrant
+      app: test-ocp-aws
 
 components:
-  - ../../../../tasks/deploy/
-  - ../../../../tasks/infra/
-  - ../../../../tasks/test/
+  - ../../../tasks/deploy/
+  - ../../../tasks/infra/
+  - ../../../tasks/test/
 
 resources:
   - pipeline.yaml
