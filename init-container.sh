@@ -26,6 +26,10 @@ curl -LSs -o /usr/local/bin/opm "https://github.com/operator-framework/operator-
     | jq -r .tag_name)/linux-${ARCH}-opm" \
     && chmod 0755 /usr/local/bin/opm
 
+curl -LSs -o /usr/local/bin/cli53 "https://github.com/barnybug/cli53/releases/download/$(curl -Lfs https://api.github.com/repos/barnybug/cli53/releases/latest \
+    | jq -r .tag_name)/cli53-linux-${ARCH}" \
+    && chmod 0755 /usr/local/bin/cli53
+
 curl -LSs -o awscli.zip "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}.zip" \
     && unzip awscli.zip \
     && ./aws/install -i /usr/local/aws -b /usr/local/bin \
