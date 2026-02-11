@@ -1,57 +1,47 @@
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
-  name: test-ocp-aws
+  name: test-upgrade
 spec:
   params:
-    # Cluster related parameters
-    - name: cluster-name
+# Cluster related parameters
+    - description: API URL of the Openshift cluster
+      name: kube-api
       type: string
-    - name: installer-version
+    - description: Secret name with cluster credentials
+      name: cluster-credentials
       type: string
-      default: "stable"
-    - name: region
-      type: string
-      default: "us-east-1"
-    - name: master-size
-      type: string
-      default: "m6g.xlarge"
-    - name: worker-size
-      type: string
-      default: "m6g.large"
-    - name: installer-arch
-      type: string
-      default: "arm64"
-    # Kuadrant/RHCL installation related parameters
-    - default: quay.io/kuadrant/kuadrant-operator-catalog:v1.3.1
-      description: Kuadrant/RHCL index image, leave empty to install current RHCL GA
+      default: openshift-pipelines-credentials
+# Kuadrant/RHCL installation/upgrade related parameters
+    - default: ""
+      description: Kuadrant/RHCL index image, must contain proper bundle chain for upgrade
       name: index-image
       type: string
     - default: stable
       description: Kuadrant channel (stable, preview)
       name: channel
       type: string
-    - default: kuadrant-operator
+    - default: rhcl-operator
       description: Operator name (kuadrant-operator, rhcl-operator)
       name: operator-name
       type: string
     - default: ossm3
-      description: Istio provider (ossm3, ocp); 'ossm3' (recommended for all Openshift versions), 'ocp' for installing Istio managed by Gateway API on OCP v4.19+ (not recommended - mTLS is not supported).
+      description: Istio provider (ossm3, ocp); 'ossm3' (recommended for all Openshift versions), 'ocp' for installing Istio managed by Gateway API on OCP v4.19+ (not recommended - mTLS is not supported)
       name: istio-provider
       type: string
     - default: ""
       description: GatewayAPI CRD version. [v1.2.1, v1.3.0, v1.4.0] available; leave empty if installing on Openshift 4.19+.
       name: gateway-crd
       type: string
-    - default: ""
-      description: Additional flags for helm install command, example '--set=kuadrant.installPlanApproval=Manual --set=kuadrant.startingCSV=kuadrant-operator.v1.2.0'
+    - default: "--set=kuadrant.installPlanApproval=Manual --set=kuadrant.startingCSV=rhcl-operator.v1.2.1"
+      description: Additional flags for helm install command, update default value for desired "upgrade from" version here as needed
       name: additional-helm-flags
       type: string
     - default: ""
       description: Additional flags for tools helm, example '--set=tools.keycloak.keycloakProvider=deployment --set=tools.valkey.enable=false'"
       name: additional-helm-tools-flags
       type: string
-    # Testsuite related parameters
+# Testsuite related parameters
     - default: 'quay.io/kuadrant/testsuite:unstable'
       description: Testsuite image
       name: testsuite-image
@@ -60,15 +50,19 @@ spec:
       description: Openshift project
       name: project
       type: string
+    - default: smoke
+      description: Makefile target for pre-upgrade tests
+      name: pre-upgrade-make-target
+      type: string
     - default: test
-      description: Makefile target for tests
-      name: make-target
+      description: Makefile target for post-upgrade tests
+      name: post-upgrade-make-target
       type: string
     - default: ""
       description: Pytest flags to use with Make (flags="${pytest-flags}" make kuadrant)
       name: pytest-flags
       type: string
-    - default: pipeline-settings-aws
+    - default: pipeline-settings
       description: Config Map with settings for the testsuite
       name: settings-cm
       type: string
@@ -76,8 +70,8 @@ spec:
       description: Additional env for testsuite container separated with spaces (e.g. KUADRANT_CONTROL_PLANE__provider_secret=gcp-credentials KUADRANT_KEYCLOAK__url="https://my-sso.net")
       name: additional-env
       type: string
-    # Report Portal related parameters
-    - default: full-cycle-ocp-aws
+# Report Portal related parameters
+    - default: full-cycle-upgrade
       description: Prefix of the launch name saved in report portal (nightly, username, manual, etc.). In case of release candidate testing use kuadrant-v<version>, rhcl-v<version>, or authorino-v<version>
       name: launch-name
       type: string
@@ -86,44 +80,42 @@ spec:
       name: launch-description
       type: string
     - default: testsuite
-      description: Report Portal Project to store test results (testsuite or nightly-testsuite typically)
+      description: Report Portal Project to store test results (e.g. testsuite, nightly-testsuite, releases)
       name: rp-project
       type: string
     - default: true
       description: If set to 'true' upload test results to Report Portal
       name: upload-results
       type: string
-    # Cleanup
-    - default: false
-      description: If set to 'true' cleanup will be done
-      name: cleanup
-      type: string
   workspaces:
     - name: shared-workspace
-      description: "Workspace to store cluster state files"
   tasks:
-    - name: provision-ocp-aws
+    - name: check-image-existence
+      when:
+        - input: "$(params.index-image)"
+          operator: notin
+          values: ['']
       params:
-        - name: cluster-name
-          value: $(params.cluster-name)
-        - name: installer-version
-          value: $(params.installer-version)
-        - name: region
-          value: $(params.region)
-        - name: master-size
-          value: $(params.master-size)
-        - name: worker-size
-          value: $(params.worker-size)
-        - name: installer-arch
-          value: $(params.installer-arch)
+        - name: index-image
+          value: $(params.index-image)
+      taskRef:
+        kind: Task
+        name: check-image-existence
+    - name: kubectl-login
+      params:
+        - name: kube-api
+          value: $(params.kube-api)
+        - name: testsuite-image
+          value: 'quay.io/kuadrant/testsuite-pipelines-tools:latest'
+        - name: cluster-credentials
+          value: $(params.cluster-credentials)
+      taskRef:
+        kind: Task
+        name: kubectl-login
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
-      taskRef:
-        kind: Task
-        name: provision-ocp-aws
     - name: helm-deploy
-      retries: 3
       params:
         - name: index-image
           value: $(params.index-image)
@@ -134,7 +126,7 @@ spec:
         - name: operator-name
           value: $(params.operator-name)
         - name: kubeconfig-path
-          value: $(tasks.provision-ocp-aws.results.kubeconfig-path)
+          value: $(tasks.kubectl-login.results.kubeconfig-path)
         - name: gateway-crd
           value: $(params.gateway-crd)
         - name: additional-helm-flags
@@ -142,34 +134,35 @@ spec:
         - name: additional-helm-tools-flags
           value: $(params.additional-helm-tools-flags)
       runAfter:
-        - provision-ocp-aws
+        - kubectl-login
+        - check-image-existence
       taskRef:
         kind: Task
         name: helm-deploy
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
-    - name: do-custom-updates
+    - name: operator-pod-restart
+      retries: 3
       params:
         - name: kubeconfig-path
-          value: $(tasks.provision-ocp-aws.results.kubeconfig-path)
+          value: $(tasks.kubectl-login.results.kubeconfig-path)
       runAfter:
         - helm-deploy
       taskRef:
         kind: Task
-        name: do-custom-updates
+        name: operator-pod-restart
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
-    - name: run-tests
-      timeout: "2h"
+    - name: run-tests-pre-upgrade
       params:
         - name: testsuite-image
           value: $(params.testsuite-image)
         - name: project
           value: $(params.project)
         - name: make-target
-          value: $(params.make-target)
+          value: $(params.pre-upgrade-make-target)
         - name: pytest-flags
           value: $(params.pytest-flags)
         - name: settings-cm
@@ -177,11 +170,61 @@ spec:
         - name: additional-env
           value: $(params.additional-env)
         - name: kubeconfig-path
-          value: $(tasks.provision-ocp-aws.results.kubeconfig-path)
+          value: $(tasks.kubectl-login.results.kubeconfig-path)
         - name: cluster-credentials
-          value: $(tasks.provision-ocp-aws.results.credentials-secret)
+          value: $(params.cluster-credentials)
       runAfter:
-        - do-custom-updates
+        - operator-pod-restart
+      taskRef:
+        kind: Task
+        name: run-tests
+      workspaces:
+        - name: shared-workspace
+          workspace: shared-workspace
+    - name: pause-pipeline-pre-upgrade
+      runAfter:
+        - run-tests-pre-upgrade
+      taskRef:
+        kind: Task
+        name: pause-pipeline
+    - name: upgrade-to-latest
+      params:
+        - name: kubeconfig-path
+          value: $(tasks.kubectl-login.results.kubeconfig-path)
+      runAfter:
+        - pause-pipeline-pre-upgrade
+      taskRef:
+        kind: Task
+        name: upgrade-to-latest
+      workspaces:
+        - name: shared-workspace
+          workspace: shared-workspace
+    - name: pause-pipeline-post-upgrade
+      runAfter:
+        - upgrade-to-latest
+      taskRef:
+        kind: Task
+        name: pause-pipeline
+    - name: run-tests-post-upgrade
+      params:
+        - name: testsuite-image
+          value: $(params.testsuite-image)
+        - name: project
+          value: $(params.project)
+        - name: make-target
+          value: $(params.post-upgrade-make-target)
+        - name: pytest-flags
+          value: $(params.pytest-flags)
+        - name: settings-cm
+          value: $(params.settings-cm)
+        - name: additional-env
+          value: $(params.additional-env)
+        - name: kubeconfig-path
+          value: $(tasks.kubectl-login.results.kubeconfig-path)
+        - name: cluster-credentials
+          value: $(params.cluster-credentials)
+      runAfter:
+        - pause-pipeline-post-upgrade
       taskRef:
         kind: Task
         name: run-tests
@@ -201,29 +244,17 @@ spec:
         - name: testsuite-image
           value: $(params.testsuite-image)
         - name: make-target
-          value: $(params.make-target)
+          value: $(params.post-upgrade-make-target)
         - name: rp-project
           value: $(params.rp-project)
         - name: ocp-version
-          value: $(tasks.provision-ocp-aws.results.ocp-version)
+          value: $(tasks.kubectl-login.results.ocp-version)
       runAfter:
-        - run-tests
+        - run-tests-post-upgrade
       taskRef:
         kind: Task
         name: upload-results
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
-    - name: delete-ocp-aws
-      when:
-        - input: $(params.cleanup)
-          operator: in
-          values: ["true"]
-      runAfter:
-        - upload-results
-      params:
-        - name: cluster-name
-          value: $(params.cluster-name)
-      taskRef:
-        kind: Task
-        name: delete-ocp-aws
+

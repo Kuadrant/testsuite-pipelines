@@ -22,7 +22,7 @@ spec:
         #!/usr/bin/env bash
         set -evo pipefail
 
-        # Get the namespace of the Subsciption (typically kuadrant-system but it can be different)
+        # Get the namespace of the Subscription (typically kuadrant-system but it can be different)
         namespace=$(kubectl get subscription --all-namespaces -o json | jq -r '.items[] | select(.metadata.name == "kuadrant-operator") | .metadata.namespace')
         if [[ -z "$namespace" ]]; then
             echo "Subcription 'kuadrant-operator' not found in any namespace."
