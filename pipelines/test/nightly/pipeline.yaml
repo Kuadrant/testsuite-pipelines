@@ -224,7 +224,7 @@ spec:
         - name: settings-cm
           value: $(params.settings-cm)
         - name: additional-env
-          value: $(params.additional-env)
+          value: '$(params.additional-env) KUADRANT_CONTROL_PLANE__cluster2__kubeconfig_path=$(tasks.kubectl-login-second-cluster.results.kubeconfig-path)'
         - name: kubeconfig-path
           value: $(tasks.kubectl-login.results.kubeconfig-path)
         - name: cluster-credentials
