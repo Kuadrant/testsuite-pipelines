@@ -5,3 +5,4 @@ resources:
   - check-image-existence.yaml
   - nightly-image-date.yaml
   - helm-deploy.yaml
+  - install-mcp-gateway.yaml
