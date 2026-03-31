@@ -72,6 +72,32 @@ spec:
         name: kubectl-login
       workspaces:
         - name: shared-workspace
+
+    - name: collect-tests-info
+      params:
+        - name: testsuite-image
+          value: $(params.testsuite-image)
+        - name: project
+          value: $(params.project)
+        - name: make-target
+          value: kuadrant
+        - name: pytest-flags
+          value: $(params.pytest-flags)
+        - name: settings-cm
+          value: $(params.settings-cm)
+        - name: additional-env
+          value: $(params.additional-env)
+        - name: kubeconfig-path
+          value: $(tasks.kubectl-login.results.kubeconfig-path)
+        - name: cluster-credentials
+          value: $(params.cluster-credentials)
+      runAfter:
+        - kubectl-login
+      taskRef:
+        kind: Task
+        name: collect-tests
+      workspaces:
+        - name: shared-workspace
     - name: run-tests-kuadrant
       params:
         - name: testsuite-image
@@ -94,7 +120,7 @@ spec:
         - kubectl-login
       taskRef:
         kind: Task
-        name: run-tests
+        name: collect-tests
       workspaces:
         - name: shared-workspace
     - name: kubectl-login-second-cluster

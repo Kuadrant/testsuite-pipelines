@@ -11,8 +11,9 @@ spec:
       name: launch-description
       type: string
     - description: Testsuite image to run tests on
-      name: testsuite-image
+      name: rptool-image
       type: string
+      default: quay.io/kuadrant/rptool
     - description: Makefile target for tests
       name: make-target
       type: string
@@ -23,12 +24,11 @@ spec:
       name: ocp-version
       type: string
   steps:
-    - args:
-        - make reportportal
-      command:
-        - /bin/bash
-        - -cveo
-        - pipefail
+    - name: upload-results
+      image: $(params.rptool-image)
+      imagePullPolicy: Always
+      script: |
+        rptool write "$(workspaces.shared-workspace.path)/junit*.xml"
       computeResources:
         limits:
           cpu: '250m'
@@ -40,7 +40,7 @@ spec:
           value: $(params.launch-name)-$(params.make-target)
         - name: RP_PROJECT
           value: $(params.rp-project)
-        - name: REPORTPORTAL
+        - name: RP_URL
           valueFrom:
             secretKeyRef:
               key: RP_URL
@@ -52,13 +52,10 @@ spec:
               name: rp-credentials
         - name: REQUESTS_CA_BUNDLE
           value: /var/ca-bundle/tls-ca-bundle.pem
-        - name: RP_LAUNCH_DESC
+        - name: RP_LAUNCH_DESCRIPTION
           value: $(params.launch-description)
         - name: OCP_VERSION
           value: $(params.ocp-version)
-      image: $(params.testsuite-image)
-      imagePullPolicy: Always
-      name: upload-results
       volumeMounts:
         - mountPath: /var/ca-bundle
           name: rp-ca-bundle
