@@ -1,0 +1,67 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: zkraus-upload-results
+spec:
+  params:
+    - description: Prefix of the launch name saved in report portal (nightly, username, manual, etc.)
+      name: launch-name
+      type: string
+    - description: Launch description for Report Portal
+      name: launch-description
+      type: string
+    - description: Testsuite image to run tests on
+      name: rptool-image
+      type: string
+      default: quay.io/kuadrant/rptool
+    - description: Makefile target for tests
+      name: make-target
+      type: string
+    - description: Report Portal Project to store test results
+      name: rp-project
+      type: string
+    - description: OCP cluster version
+      name: ocp-version
+      type: string
+  steps:
+    - name: upload-results
+      image: $(params.rptool-image)
+      imagePullPolicy: Always
+      script: |
+        rptool write "$(workspaces.shared-workspace.path)/junit*.xml"
+      computeResources:
+        limits:
+          cpu: '250m'
+          memory: 128Mi
+      env:
+        - name: WORKSPACE
+          value: $(workspaces.shared-workspace.path)
+        - name: RP_LAUNCH_NAME
+          value: $(params.launch-name)-$(params.make-target)
+        - name: RP_PROJECT
+          value: $(params.rp-project)
+        - name: RP_URL
+          valueFrom:
+            secretKeyRef:
+              key: RP_URL
+              name: rp-credentials
+        - name: RP_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: RP_TOKEN
+              name: rp-credentials
+        - name: REQUESTS_CA_BUNDLE
+          value: /var/ca-bundle/tls-ca-bundle.pem
+        - name: RP_LAUNCH_DESCRIPTION
+          value: $(params.launch-description)
+        - name: OCP_VERSION
+          value: $(params.ocp-version)
+      volumeMounts:
+        - mountPath: /var/ca-bundle
+          name: rp-ca-bundle
+  volumes:
+    - configMap:
+        name: rp-ca-bundle
+      name: rp-ca-bundle
+  workspaces:
+    - name: shared-workspace
