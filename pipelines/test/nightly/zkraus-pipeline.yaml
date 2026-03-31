@@ -117,10 +117,10 @@ spec:
         - name: cluster-credentials
           value: $(params.cluster-credentials)
       runAfter:
-        - kubectl-login
+        - collect-tests-info
       taskRef:
         kind: Task
-        name: collect-tests
+        name: run-tests
       workspaces:
         - name: shared-workspace
     - name: kubectl-login-second-cluster
