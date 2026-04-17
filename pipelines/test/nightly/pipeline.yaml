@@ -58,6 +58,10 @@ spec:
       description: Upload test results to Report Portal
       name: upload-results
       type: string
+    - default: 'quay.io/kuadrant/rptool:unstable'
+      description: rptool image for uploading results to Report Portal
+      name: rptool-image
+      type: string
   tasks:
     - name: kubectl-login
       params:
@@ -70,6 +74,24 @@ spec:
       taskRef:
         kind: Task
         name: kubectl-login
+      workspaces:
+        - name: shared-workspace
+    - name: collect-info
+      params:
+        - name: testsuite-image
+          value: $(params.testsuite-image)
+        - name: settings-cm
+          value: $(params.settings-cm)
+        - name: kubeconfig-path
+          value: $(tasks.kubectl-login.results.kubeconfig-path)
+        - name: additional-env
+          value: 'KUADRANT_CONTROL_PLANE__cluster2__kubeconfig_path=$(tasks.kubectl-login-second-cluster.results.kubeconfig-path)'
+      runAfter:
+        - kubectl-login
+        - kubectl-login-second-cluster
+      taskRef:
+        kind: Task
+        name: collect-info
       workspaces:
         - name: shared-workspace
     - name: run-tests-kuadrant
@@ -91,7 +113,7 @@ spec:
         - name: cluster-credentials
           value: $(params.cluster-credentials)
       runAfter:
-        - kubectl-login
+        - collect-info
       taskRef:
         kind: Task
         name: run-tests
@@ -129,7 +151,7 @@ spec:
         - name: cluster-credentials
           value: $(params.cluster-credentials)
       runAfter:
-        - kubectl-login-second-cluster
+        - collect-info
       taskRef:
         kind: Task
         name: run-tests
@@ -264,7 +286,7 @@ spec:
       workspaces:
         - name: shared-workspace
   finally:
-    - name: upload-results
+    - name: rptool-upload
       when:
         - input: $(params.upload-results)
           operator: in
@@ -274,17 +296,15 @@ spec:
           value: $(params.launch-name)
         - name: launch-description
           value: $(params.launch-description)
-        - name: testsuite-image
-          value: $(params.testsuite-image)
+        - name: rptool-image
+          value: $(params.rptool-image)
         - name: make-target
           value: all
         - name: rp-project
           value: $(params.rp-project)
-        - name: ocp-version
-          value: $(tasks.kubectl-login.results.ocp-version)
       taskRef:
         kind: Task
-        name: upload-results
+        name: rptool-upload
       workspaces:
         - name: shared-workspace
   workspaces:

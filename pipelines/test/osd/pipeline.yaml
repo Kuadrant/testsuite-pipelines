@@ -112,6 +112,10 @@ spec:
       description: If set to 'true' upload test results to Report Portal
       name: upload-results
       type: string
+    - default: 'quay.io/kuadrant/rptool:unstable'
+      description: rptool image for uploading results to Report Portal
+      name: rptool-image
+      type: string
 # Cleanup
     - default: false
       description: If set to 'true' cleanup will be done
@@ -398,6 +402,21 @@ spec:
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
+    - name: collect-info
+      params:
+        - name: testsuite-image
+          value: $(params.testsuite-image)
+        - name: settings-cm
+          value: $(params.settings-cm)
+        - name: kubeconfig-path
+          value: $(tasks.kubectl-login.results.kubeconfig-path)
+      runAfter:
+        - do-custom-updates
+      taskRef:
+        kind: Task
+        name: collect-info
+      workspaces:
+        - name: shared-workspace
     - name: run-tests
       params:
         - name: testsuite-image
@@ -417,13 +436,13 @@ spec:
         - name: cluster-credentials
           value: $(tasks.get-osd-credentials.results.credentials-secret)
       runAfter:
-        - do-custom-updates
+        - collect-info
       taskRef:
         kind: Task
         name: run-tests
       workspaces:
         - name: shared-workspace
-    - name: upload-results
+    - name: rptool-upload
       when:
         - input: $(params.upload-results)
           operator: in
@@ -433,19 +452,17 @@ spec:
           value: $(params.launch-name)
         - name: launch-description
           value: $(params.launch-description)
-        - name: testsuite-image
-          value: $(params.testsuite-image)
+        - name: rptool-image
+          value: $(params.rptool-image)
         - name: make-target
           value: $(params.make-target)
         - name: rp-project
           value: $(params.rp-project)
-        - name: ocp-version
-          value: $(tasks.kubectl-login.results.ocp-version)
       runAfter:
         - run-tests
       taskRef:
         kind: Task
-        name: upload-results
+        name: rptool-upload
       workspaces:
         - name: shared-workspace
     - name: helm-uninstall-cleanup
@@ -457,7 +474,7 @@ spec:
         - name: kubeconfig-path
           value: $(tasks.kubectl-login.results.kubeconfig-path)
       runAfter:
-        - upload-results
+        - rptool-upload
         - run-tests
       taskRef:
         kind: Task

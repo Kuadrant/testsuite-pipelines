@@ -3,4 +3,5 @@ kind: Component
 
 resources:
   - run-tests.yaml
-  - upload-results.yaml
+  - collect-info.yaml
+  - rptool-upload.yaml
