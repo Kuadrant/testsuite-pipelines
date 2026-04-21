@@ -87,6 +87,10 @@ spec:
       description: If set to 'true' upload test results to Report Portal
       name: upload-results
       type: string
+    - default: 'quay.io/kuadrant/rptool:unstable'
+      description: rptool image for uploading results to Report Portal
+      name: rptool-image
+      type: string
   workspaces:
     - name: shared-workspace
   tasks:
@@ -205,6 +209,22 @@ spec:
       taskRef:
         kind: Task
         name: pause-pipeline
+    - name: collect-info
+      params:
+        - name: testsuite-image
+          value: $(params.testsuite-image)
+        - name: settings-cm
+          value: $(params.settings-cm)
+        - name: kubeconfig-path
+          value: $(tasks.kubectl-login.results.kubeconfig-path)
+      runAfter:
+        - pause-pipeline-post-upgrade
+      taskRef:
+        kind: Task
+        name: collect-info
+      workspaces:
+        - name: shared-workspace
+          workspace: shared-workspace
     - name: run-tests-post-upgrade
       params:
         - name: testsuite-image
@@ -224,14 +244,14 @@ spec:
         - name: cluster-credentials
           value: $(params.cluster-credentials)
       runAfter:
-        - pause-pipeline-post-upgrade
+        - collect-info
       taskRef:
         kind: Task
         name: run-tests
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
-    - name: upload-results
+    - name: rptool-upload
       when:
         - input: $(params.upload-results)
           operator: in
@@ -241,19 +261,17 @@ spec:
           value: $(params.launch-name)
         - name: launch-description
           value: $(params.launch-description)
-        - name: testsuite-image
-          value: $(params.testsuite-image)
+        - name: rptool-image
+          value: $(params.rptool-image)
         - name: make-target
           value: $(params.post-upgrade-make-target)
         - name: rp-project
           value: $(params.rp-project)
-        - name: ocp-version
-          value: $(tasks.kubectl-login.results.ocp-version)
       runAfter:
         - run-tests-post-upgrade
       taskRef:
         kind: Task
-        name: upload-results
+        name: rptool-upload
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace

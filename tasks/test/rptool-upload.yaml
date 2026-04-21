@@ -1,7 +1,7 @@
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
-  name: upload-results
+  name: rptool-upload
 spec:
   params:
     - description: Prefix of the launch name saved in report portal (nightly, username, manual, etc.)
@@ -10,8 +10,8 @@ spec:
     - description: Launch description for Report Portal
       name: launch-description
       type: string
-    - description: Testsuite image to run tests on
-      name: testsuite-image
+    - description: rptool image to use for uploading results
+      name: rptool-image
       type: string
     - description: Makefile target for tests
       name: make-target
@@ -19,12 +19,10 @@ spec:
     - description: Report Portal Project to store test results
       name: rp-project
       type: string
-    - description: OCP cluster version
-      name: ocp-version
-      type: string
   steps:
     - args:
-        - make reportportal
+        - >-
+          rptool write --launch-name "${RP_LAUNCH_NAME}" --launch-description "${RP_LAUNCH_DESC}" ${WORKSPACE}/junit-*.xml
       command:
         - /bin/bash
         - -cveo
@@ -32,15 +30,17 @@ spec:
       computeResources:
         limits:
           cpu: '250m'
-          memory: 128Mi
+          memory: 256Mi
       env:
         - name: WORKSPACE
           value: $(workspaces.shared-workspace.path)
         - name: RP_LAUNCH_NAME
           value: $(params.launch-name)-$(params.make-target)
+        - name: RP_LAUNCH_DESC
+          value: $(params.launch-description)
         - name: RP_PROJECT
           value: $(params.rp-project)
-        - name: REPORTPORTAL
+        - name: RP_URL
           valueFrom:
             secretKeyRef:
               key: RP_URL
@@ -52,13 +52,9 @@ spec:
               name: rp-credentials
         - name: REQUESTS_CA_BUNDLE
           value: /var/ca-bundle/tls-ca-bundle.pem
-        - name: RP_LAUNCH_DESC
-          value: $(params.launch-description)
-        - name: OCP_VERSION
-          value: $(params.ocp-version)
-      image: $(params.testsuite-image)
+      image: $(params.rptool-image)
       imagePullPolicy: Always
-      name: upload-results
+      name: rptool-upload
       volumeMounts:
         - mountPath: /var/ca-bundle
           name: rp-ca-bundle

@@ -1,0 +1,52 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: collect-info
+spec:
+  params:
+    - description: Testsuite image to run info collection on
+      name: testsuite-image
+      type: string
+    - description: Config Map with settings for the testsuite
+      name: settings-cm
+      type: string
+    - description: Path to workspace kubeconfig
+      name: kubeconfig-path
+      type: string
+    - description: Additional env for testsuite container separated with spaces (e.g. KUADRANT_CONTROL_PLANE__cluster2__kubeconfig_path=/workspace/cluster2)
+      name: additional-env
+      type: string
+      default: ""
+  steps:
+    - args:
+        - >-
+          cp /var/kuadrant-settings/settings.local.yaml /opt/workdir/kuadrant-testsuite/config &&
+          export $(params.additional-env) &> /dev/null &&
+          (make collect || true)
+      command:
+        - /bin/bash
+        - -cveo
+        - pipefail
+      computeResources:
+        limits:
+          cpu: '250m'
+          memory: 256Mi
+      env:
+        - name: KUBECONFIG
+          value: $(params.kubeconfig-path)
+        - name: WORKSPACE
+          value: $(workspaces.shared-workspace.path)
+        - name: COLLECTOR_ENABLE
+          value: "true"
+      image: $(params.testsuite-image)
+      imagePullPolicy: Always
+      name: collect-info
+      volumeMounts:
+        - mountPath: /var/kuadrant-settings
+          name: $(params.settings-cm)
+  volumes:
+    - configMap:
+        name: $(params.settings-cm)
+      name: $(params.settings-cm)
+  workspaces:
+    - name: shared-workspace
