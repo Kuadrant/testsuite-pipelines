@@ -48,7 +48,7 @@ spec:
         done
     command:
       - /bin/bash
-      - -c
+      - -vc
     env:
       - name: KUBECONFIG
         value: $(params.kubeconfig-path)
@@ -56,13 +56,10 @@ spec:
     imagePullPolicy: Always
   - name: uninstall-instances
     args:
-      - uninstall
-      - -n=default
-      - --ignore-not-found
-      - --wait
-      - kuadrant-instances
+      - helm uninstall -n=default --ignore-not-found --wait kuadrant-instances
     command:
-      - helm
+      - /bin/bash
+      - -vc
     env:
       - name: KUBECONFIG
         value: $(params.kubeconfig-path)
@@ -70,13 +67,10 @@ spec:
     imagePullPolicy: Always
   - name: uninstall-operators
     args:
-      - uninstall
-      - -n=default
-      - --ignore-not-found
-      - --wait
-      - kuadrant-operators
+      - helm uninstall -n=default --ignore-not-found --wait kuadrant-operators
     command:
-      - helm
+      - /bin/bash
+      - -vc
     env:
       - name: KUBECONFIG
         value: $(params.kubeconfig-path)
@@ -87,7 +81,7 @@ spec:
       - kubectl delete --ignore-not-found ns/cert-manager
     command:
       - /bin/bash
-      - -c
+      - -vc
     env:
       - name: KUBECONFIG
         value: $(params.kubeconfig-path)
@@ -98,7 +92,7 @@ spec:
       - kubectl get crd -o name | grep "kuadrant" | xargs --no-run-if-empty kubectl delete
     command:
       - /bin/bash
-      - -c
+      - -vc
     env:
       - name: KUBECONFIG
         value: $(params.kubeconfig-path)
@@ -106,13 +100,10 @@ spec:
     imagePullPolicy: Always
   - name: uninstall-tools-instances
     args:
-      - uninstall
-      - -n=default
-      - --ignore-not-found
-      - --wait
-      - tools-instances
+      - helm uninstall -n=default --ignore-not-found --wait tools-instances
     command:
-      - helm
+      - /bin/bash
+      - -vc
     env:
       - name: KUBECONFIG
         value: $(params.kubeconfig-path)
@@ -120,13 +111,10 @@ spec:
     imagePullPolicy: Always
   - name: uninstall-tools-operators
     args:
-      - uninstall
-      - -n=default
-      - --ignore-not-found
-      - --wait
-      - tools-operators
+      - helm uninstall -n=default --ignore-not-found --wait tools-operators
     command:
-      - helm
+      - /bin/bash
+      - -vc
     env:
       - name: KUBECONFIG
         value: $(params.kubeconfig-path)
@@ -135,12 +123,13 @@ spec:
 
   # Install steps
   - name: helm-install-tools-operators
-    script: >
-      helm install -n=default
-      --repo https://kuadrant.io/helm-charts-olm
-      $(params.additional-helm-tools-flags)
-      --wait --wait-for-jobs --debug
-      tools-operators
+    script: |
+      #!/bin/bash -v
+      helm install -n=default \
+      --repo https://kuadrant.io/helm-charts-olm \
+      $(params.additional-helm-tools-flags) \
+      --wait --wait-for-jobs --debug \
+      tools-operators \
       tools-operators
     env:
       - name: KUBECONFIG
@@ -148,12 +137,13 @@ spec:
     image: quay.io/kuadrant/testsuite-pipelines-tools:latest
     imagePullPolicy: Always
   - name: helm-install-tools-instances
-    script: >
-      helm install -n=default
-      --repo https://kuadrant.io/helm-charts-olm
-      $(params.additional-helm-tools-flags)
-      --wait --wait-for-jobs --debug --timeout=10m0s
-      tools-instances
+    script: |
+      #!/bin/bash -v
+      helm install -n=default \
+      --repo https://kuadrant.io/helm-charts-olm \
+      $(params.additional-helm-tools-flags) \
+      --wait --wait-for-jobs --debug --timeout=10m0s \
+      tools-instances \
       tools-instances
     env:
       - name: KUBECONFIG
@@ -161,19 +151,20 @@ spec:
     image: quay.io/kuadrant/testsuite-pipelines-tools:latest
     imagePullPolicy: Always
   - name: helm-install-operators
-    script: >
-      helm install -n=default
-      --repo https://kuadrant.io/helm-charts-olm
-      --values=/mount/values-additional-manifests/additionalManifests.yaml
-      --set=kuadrant.indexImage="$(params.index-image)"
-      --set=kuadrant.channel="$(params.channel)"
-      --set=kuadrant.operatorName="$(params.operator-name)"
-      --set=istio.istioProvider="$(params.istio-provider)"
-      --set=gatewayAPI.version="$(params.gateway-crd)"
-      --set=tools.enabled=true
-      $(params.additional-helm-flags)
-      --wait --wait-for-jobs --debug
-      kuadrant-operators
+    script: |
+      #!/bin/bash -v
+      helm install -n=default \
+      --repo https://kuadrant.io/helm-charts-olm \
+      --values=/mount/values-additional-manifests/additionalManifests.yaml \
+      --set=kuadrant.indexImage="$(params.index-image)" \
+      --set=kuadrant.channel="$(params.channel)" \
+      --set=kuadrant.operatorName="$(params.operator-name)" \
+      --set=istio.istioProvider="$(params.istio-provider)" \
+      --set=gatewayAPI.version="$(params.gateway-crd)" \
+      --set=tools.enabled=true \
+      $(params.additional-helm-flags) \
+      --wait --wait-for-jobs --debug \
+      kuadrant-operators \
       kuadrant-operators
     volumeMounts:
       - mountPath: /mount/values-additional-manifests
@@ -184,19 +175,20 @@ spec:
     image: quay.io/kuadrant/testsuite-pipelines-tools:latest
     imagePullPolicy: Always
   - name: helm-install-instances
-    script: >
-      helm install -n=default
-      --repo https://kuadrant.io/helm-charts-olm
-      --values=/mount/values-additional-manifests/additionalManifests.yaml
-      --set=kuadrant.indexImage="$(params.index-image)"
-      --set=kuadrant.channel="$(params.channel)"
-      --set=kuadrant.operatorName="$(params.operator-name)"
-      --set=istio.istioProvider="$(params.istio-provider)"
-      --set=gatewayAPI.version="$(params.gateway-crd)"
-      --set=tools.enabled=true
-      $(params.additional-helm-flags)
-      --wait --wait-for-jobs --debug
-      kuadrant-instances
+    script: |
+      #!/bin/bash -v
+      helm install -n=default \
+      --repo https://kuadrant.io/helm-charts-olm \
+      --values=/mount/values-additional-manifests/additionalManifests.yaml \
+      --set=kuadrant.indexImage="$(params.index-image)" \
+      --set=kuadrant.channel="$(params.channel)" \
+      --set=kuadrant.operatorName="$(params.operator-name)" \
+      --set=istio.istioProvider="$(params.istio-provider)" \
+      --set=gatewayAPI.version="$(params.gateway-crd)" \
+      --set=tools.enabled=true \
+      $(params.additional-helm-flags) \
+      --wait --wait-for-jobs --debug \
+      kuadrant-instances \
       kuadrant-instances
     volumeMounts:
       - mountPath: /mount/values-additional-manifests
