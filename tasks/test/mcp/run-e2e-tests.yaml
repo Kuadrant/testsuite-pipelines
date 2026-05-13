@@ -1,0 +1,52 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: run-e2e-tests
+spec:
+  params:
+    - description: Path to workspace kubeconfig
+      name: kubeconfig-path
+      type: string
+  steps:
+    - name: run-e2e-tests
+      image: quay.io/kuadrant/testsuite-pipelines-tools:latest
+      imagePullPolicy: Always
+      env:
+      - name: KUBECONFIG
+        value: $(params.kubeconfig-path)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        export MCP_GATEWAY_NAMESPACE=mcp-system
+
+        # get URL to MCP Gateway
+        export MCP_GATEWAY_HOST="mcp.apps.$(oc get dns cluster -o jsonpath='{.spec.baseDomain}')"
+        export GATEWAY_URL="https://${MCP_GATEWAY_HOST}/mcp"
+
+        # create mcp-test namespace if it does not exist
+        oc create namespace mcp-test --dry-run=client -o yaml | oc apply -f -
+
+        cd "$(workspaces.shared-workspace.path)/mcp-gateway"
+
+        # deploy and register test MCP servers
+        oc apply -k config/test-servers/
+        # patch imagePullPolicy to pull the image from remote registry
+        for dep in $(oc get deployments -n mcp-test -o jsonpath='{.items[*].metadata.name}'); do
+          oc patch deployment "$dep" -n mcp-test --type='json' -p='[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Always"}]'
+        done
+        # wait for test MCP servers to get ready
+        oc wait --for=condition=available --timeout=180s deployment/mcp-test-server1 -n mcp-test
+        oc wait --for=condition=available --timeout=180s deployment/mcp-test-server2 -n mcp-test
+
+        # deploy redis
+        oc apply -f config/mcp-gateway/overlays/mcp-system/redis-deployment.yaml -n "$MCP_GATEWAY_NAMESPACE"
+        oc apply -f config/mcp-gateway/overlays/mcp-system/redis-service.yaml -n $MCP_GATEWAY_NAMESPACE
+        oc rollout status deployment/redis -n $MCP_GATEWAY_NAMESPACE --timeout=60s
+
+        # TODO see what other dependencies and env vars are required and run the e2e tests
+        # make test-e2e-run
+        # make test-e2e-cleanup
+
+  workspaces:
+    - name: shared-workspace

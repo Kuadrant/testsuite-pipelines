@@ -86,6 +86,8 @@ spec:
         value: $(params.additional-helm-flags)
       - name: additional-helm-tools-flags
         value: $(params.additional-helm-tools-flags)
+      - name: install-kuadrant
+        value: "true"
     workspaces:
     - name: shared-workspace
       workspace: shared-workspace
