@@ -19,11 +19,7 @@ spec:
     - name: cluster-id
       description: cluster ID that OCM uses to identify the cluster
   steps:
-    - computeResources:
-        limits:
-          cpu: '100m'
-          memory: 64Mi
-      env:
+    - env:
         - name: SERVICE_ACCOUNT_FILE
           valueFrom:
             secretKeyRef:

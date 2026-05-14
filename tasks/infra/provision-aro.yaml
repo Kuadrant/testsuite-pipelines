@@ -29,11 +29,7 @@ spec:
     - name: credentials-secret
       description: secret name with credentials
   steps:
-    - computeResources:
-        limits:
-          cpu: '150m'
-          memory: 400Mi
-      env:
+    - env:
         - name: APP_ID
           valueFrom:
             secretKeyRef:
