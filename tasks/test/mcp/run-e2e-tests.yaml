@@ -18,11 +18,17 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
 
+        # Populate env vars required for e2e tests
         export MCP_GATEWAY_NAMESPACE=mcp-system
-
-        # get URL to MCP Gateway
         export MCP_GATEWAY_HOST="mcp.apps.$(oc get dns cluster -o jsonpath='{.spec.baseDomain}')"
         export GATEWAY_URL="https://${MCP_GATEWAY_HOST}/mcp"
+        export GATEWAY_CLASS_NAME=openshift-default
+        export E2E_DOMAIN="apps.$(oc get dns cluster -o jsonpath='{.spec.baseDomain}')"
+        export E2E_SCHEME=https
+        export E2E_PLATFORM=openshift
+        export E2E_TIMEOUT=90m
+
+        # TODO populate env vars required for "Auth" e2e tests here
 
         # create mcp-test namespace if it does not exist
         oc create namespace mcp-test --dry-run=client -o yaml | oc apply -f -
@@ -44,8 +50,90 @@ spec:
         oc apply -f config/mcp-gateway/overlays/mcp-system/redis-service.yaml -n $MCP_GATEWAY_NAMESPACE
         oc rollout status deployment/redis -n $MCP_GATEWAY_NAMESPACE --timeout=60s
 
-        # TODO see what other dependencies and env vars are required and run the e2e tests
-        # make test-e2e-run
+        make deploy-e2e-gateways-openshift
+
+        # create OpenShift Routes for e2e Gateways
+        kubectl apply -f - <<EOF
+        apiVersion: route.openshift.io/v1
+        kind: Route
+        metadata:
+          name: e2e-1
+          namespace: gateway-system
+        spec:
+          host: e2e-1.${E2E_DOMAIN}
+          tls:
+            insecureEdgeTerminationPolicy: Redirect
+            termination: edge
+          port:
+            targetPort: mcp
+          to:
+            kind: Service
+            name: e2e-1-openshift-default
+            weight: 100
+          wildcardPolicy: None
+        EOF
+
+        kubectl apply -f - <<EOF
+        apiVersion: route.openshift.io/v1
+        kind: Route
+        metadata:
+          name: e2e-2
+          namespace: gateway-system
+        spec:
+          host: e2e-2.${E2E_DOMAIN}
+          tls:
+            insecureEdgeTerminationPolicy: Redirect
+            termination: edge
+          port:
+            targetPort: mcp
+          to:
+            kind: Service
+            name: e2e-2-openshift-default
+            weight: 100
+          wildcardPolicy: None
+        EOF
+
+        kubectl apply -f - <<EOF
+        apiVersion: route.openshift.io/v1
+        kind: Route
+        metadata:
+          name: shared-gateway-team-a
+          namespace: gateway-system
+        spec:
+          host: team-a.${E2E_DOMAIN}
+          tls:
+            insecureEdgeTerminationPolicy: Redirect
+            termination: edge
+          port:
+            targetPort: team-a-mcp
+          to:
+            kind: Service
+            name: shared-gateway-openshift-default
+            weight: 100
+          wildcardPolicy: None
+        EOF
+
+        kubectl apply -f - <<EOF
+        apiVersion: route.openshift.io/v1
+        kind: Route
+        metadata:
+          name: shared-gateway-team-b
+          namespace: gateway-system
+        spec:
+          host: team-b.${E2E_DOMAIN}
+          tls:
+            insecureEdgeTerminationPolicy: Redirect
+            termination: edge
+          port:
+            targetPort: team-b-mcp
+          to:
+            kind: Service
+            name: shared-gateway-openshift-default
+            weight: 100
+          wildcardPolicy: None
+        EOF
+
+        make test-e2e-run
         # make test-e2e-cleanup
 
   workspaces:
