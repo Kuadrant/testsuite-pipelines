@@ -137,6 +137,8 @@ spec:
           value: $(params.additional-helm-flags)
         - name: additional-helm-tools-flags
           value: $(params.additional-helm-tools-flags)
+        - name: install-kuadrant
+          value: "true"
       runAfter:
         - kubectl-login
         - check-image-existence

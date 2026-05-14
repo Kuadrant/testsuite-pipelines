@@ -1,0 +1,214 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: deploy-mcp-gateway
+spec:
+  params:
+# Infrastructure
+  - description: API URL of the Openshift cluster
+    name: kube-api
+    type: string
+  - description: Secret name with cluster credentials
+    name: cluster-credentials
+    type: string
+    default: openshift-pipelines-credentials
+  - description: Additional flags for tools helm, example '--set=tools.keycloak.keycloakProvider=deployment --set=tools.valkey.enable=false'"
+    name: additional-helm-tools-flags
+    type: string
+    default: ""
+  - description: Install or re-install tools (true/false)
+    name: reinstall-tools
+    type: string
+    default: "true"
+# Gateway API
+  - description: Istio provider (ossm3, ocp); 'ossm3' (Service Mesh installed via OLM), 'ocp' (Istio managed by Gateway API (GatewayClass CR), available for OCP v4.19+)
+    name: istio-provider
+    type: string
+    default: ocp
+  - description: GatewayAPI CRD version. [v1.2.1, v1.3.0, v1.4.0] available; leave empty if installing on Openshift 4.19+.
+    name: gateway-crd
+    type: string
+    default: ""
+# MCP Gateway
+  - description: Deploy MCP Gateway before running the MCP Gateway tests (true/false)
+    name: deploy-mcp-gateway
+    type: string
+    default: "true"
+  - description: MCP Gateway git repository URL
+    name: mcp-gateway-repo-url
+    type: string
+    default: https://github.com/Kuadrant/mcp-gateway.git
+  - description: MCP Gateway git revision (branch, tag, or commit) to checkout
+    name: mcp-gateway-revision
+    type: string
+    default: main
+  - description: MCP Controller catalog image
+    name: mcp-controller-catalog-image
+    type: string
+    default: ghcr.io/kuadrant/mcp-controller-catalog:main
+  - description: If set to 'true' the 'mcp-controller-catalog-image' param is ignored. Official Catalog is used instead
+    name: install-productized-version
+    type: string
+    default: "false"
+  - description: If set to 'true' Service Mesh will be installed (true/false)
+    name: install-service-mesh
+    type: string
+    default: "true"
+  - description: MCP Gateway OLM channel. Can be 'preview' (tech preview, nightlies) or 'stable' (releases)
+    name: channel
+    type: string
+    default: stable
+# Tests
+  - description: Run MCP e2e tests (true/false)
+    name: run-e2e-tests
+    type: string
+    default: "true"
+  - description: Run MCP conformance tests (true/false)
+    name: run-conformance-tests
+    type: string
+    default: "true"
+  - description: MCP conformance test suite version
+    name: conformance-version
+    type: string
+    default: "0.1.15"
+  tasks:
+  - name: kubectl-login
+    params:
+    - name: kube-api
+      value: $(params.kube-api)
+    - name: testsuite-image
+      value: quay.io/kuadrant/testsuite-pipelines-tools:latest
+    - name: cluster-credentials
+      value: $(params.cluster-credentials)
+    taskRef:
+      kind: Task
+      name: kubectl-login
+    workspaces:
+    - name: shared-workspace
+      workspace: shared-workspace
+  - name: helm-deploy
+    retries: 3
+    runAfter:
+    - kubectl-login
+    when:
+      - input: $(params.reinstall-tools)
+        operator: in
+        values: ["true"]
+    taskRef:
+      kind: Task
+      name: helm-deploy
+    params:
+      - name: kubeconfig-path
+        value: $(tasks.kubectl-login.results.kubeconfig-path)
+      - name: istio-provider
+        value: $(params.istio-provider)
+      - name: gateway-crd
+        value: $(params.gateway-crd)
+      - name: additional-helm-tools-flags
+        value: $(params.additional-helm-tools-flags)
+      - name: install-kuadrant
+        value: "false"
+      - name: index-image
+        value: ""
+      - name: channel
+        value: ""
+      - name: operator-name
+        value: ""
+      - name: additional-helm-flags
+        value: ""
+    workspaces:
+    - name: shared-workspace
+      workspace: shared-workspace
+  - name: clone-mcp-gateway-repo
+    runAfter:
+    - kubectl-login
+    - helm-deploy
+    taskRef:
+      kind: Task
+      name: clone-repo
+    params:
+      - name: repo-url
+        value: $(params.mcp-gateway-repo-url)
+      - name: revision
+        value: $(params.mcp-gateway-revision)
+      - name: dest-dir
+        value: mcp-gateway
+    workspaces:
+    - name: shared-workspace
+      workspace: shared-workspace
+  - name: import-keycloak-realm
+    runAfter:
+    - clone-mcp-gateway-repo
+    taskRef:
+      kind: Task
+      name: import-keycloak-realm
+    params:
+      - name: kubeconfig-path
+        value: $(tasks.kubectl-login.results.kubeconfig-path)
+    workspaces:
+    - name: shared-workspace
+      workspace: shared-workspace
+  - name: install-mcp-gateway
+    runAfter:
+    - import-keycloak-realm
+    when:
+      - input: $(params.deploy-mcp-gateway)
+        operator: in
+        values: ["true"]
+    taskRef:
+      kind: Task
+      name: install-mcp-gateway
+    params:
+      - name: kubeconfig-path
+        value: $(tasks.kubectl-login.results.kubeconfig-path)
+      - name: catalog-image
+        value: $(params.mcp-controller-catalog-image)
+      - name: istio-provider
+        value: $(params.istio-provider)
+      - name: channel
+        value: $(params.channel)
+      - name: mcp-gateway-revision
+        value: $(params.mcp-gateway-revision)
+      - name: install-productized-version
+        value: $(params.install-productized-version)
+      - name: install-service-mesh
+        value: $(params.install-service-mesh)
+    workspaces:
+    - name: shared-workspace
+      workspace: shared-workspace
+  - name: run-e2e-tests
+    runAfter:
+    - install-mcp-gateway
+    when:
+      - input: $(params.run-e2e-tests)
+        operator: in
+        values: ["true"]
+    taskRef:
+      kind: Task
+      name: run-e2e-tests
+    params:
+      - name: kubeconfig-path
+        value: $(tasks.kubectl-login.results.kubeconfig-path)
+    workspaces:
+    - name: shared-workspace
+      workspace: shared-workspace
+  - name: run-conformance-tests
+    runAfter:
+    - run-e2e-tests
+    when:
+      - input: $(params.run-conformance-tests)
+        operator: in
+        values: ["true"]
+    taskRef:
+      kind: Task
+      name: run-conformance-tests
+    params:
+      - name: kubeconfig-path
+        value: $(tasks.kubectl-login.results.kubeconfig-path)
+      - name: conformance-version
+        value: $(params.conformance-version)
+    workspaces:
+    - name: shared-workspace
+      workspace: shared-workspace
+  workspaces:
+  - name: shared-workspace

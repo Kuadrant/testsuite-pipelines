@@ -28,6 +28,9 @@ spec:
     - description: Additional flags for tools helm, example '--set=tools.keycloak.keycloakProvider=deployment --set=tools.valkey.enable=false'"
       name: additional-helm-tools-flags
       type: string
+    - description: If set to 'true' Kuadrant operators and instances will be installed. If 'false', only tools will be installed
+      name: install-kuadrant
+      type: string
   steps:
   # Uninstall steps first(cleanup before install)
   - name: remove-leftovers-kuadrant-ns
@@ -153,19 +156,24 @@ spec:
   - name: helm-install-operators
     script: |
       #!/bin/bash -v
-      helm install -n=default \
-      --repo https://kuadrant.io/helm-charts-olm \
-      --values=/mount/values-additional-manifests/additionalManifests.yaml \
-      --set=kuadrant.indexImage="$(params.index-image)" \
-      --set=kuadrant.channel="$(params.channel)" \
-      --set=kuadrant.operatorName="$(params.operator-name)" \
-      --set=istio.istioProvider="$(params.istio-provider)" \
-      --set=gatewayAPI.version="$(params.gateway-crd)" \
-      --set=tools.enabled=true \
-      $(params.additional-helm-flags) \
-      --wait --wait-for-jobs --debug \
-      kuadrant-operators \
-      kuadrant-operators
+      set -e
+      if [ "$(params.install-kuadrant)" = "true" ]; then
+        helm install -n=default \
+          --repo https://kuadrant.io/helm-charts-olm \
+          --values=/mount/values-additional-manifests/additionalManifests.yaml \
+          --set=kuadrant.indexImage="$(params.index-image)" \
+          --set=kuadrant.channel="$(params.channel)" \
+          --set=kuadrant.operatorName="$(params.operator-name)" \
+          --set=istio.istioProvider="$(params.istio-provider)" \
+          --set=gatewayAPI.version="$(params.gateway-crd)" \
+          --set=tools.enabled=true \
+          $(params.additional-helm-flags) \
+          --wait --wait-for-jobs --debug \
+          kuadrant-operators \
+          kuadrant-operators
+      else
+        echo "Skipping Kuadrant operators install (install-kuadrant=false)"
+      fi
     volumeMounts:
       - mountPath: /mount/values-additional-manifests
         name: values-additional-manifests
@@ -177,19 +185,24 @@ spec:
   - name: helm-install-instances
     script: |
       #!/bin/bash -v
-      helm install -n=default \
-      --repo https://kuadrant.io/helm-charts-olm \
-      --values=/mount/values-additional-manifests/additionalManifests.yaml \
-      --set=kuadrant.indexImage="$(params.index-image)" \
-      --set=kuadrant.channel="$(params.channel)" \
-      --set=kuadrant.operatorName="$(params.operator-name)" \
-      --set=istio.istioProvider="$(params.istio-provider)" \
-      --set=gatewayAPI.version="$(params.gateway-crd)" \
-      --set=tools.enabled=true \
-      $(params.additional-helm-flags) \
-      --wait --wait-for-jobs --debug \
-      kuadrant-instances \
-      kuadrant-instances
+      set -e
+      if [ "$(params.install-kuadrant)" = "true" ]; then
+        helm install -n=default \
+          --repo https://kuadrant.io/helm-charts-olm \
+          --values=/mount/values-additional-manifests/additionalManifests.yaml \
+          --set=kuadrant.indexImage="$(params.index-image)" \
+          --set=kuadrant.channel="$(params.channel)" \
+          --set=kuadrant.operatorName="$(params.operator-name)" \
+          --set=istio.istioProvider="$(params.istio-provider)" \
+          --set=gatewayAPI.version="$(params.gateway-crd)" \
+          --set=tools.enabled=true \
+          $(params.additional-helm-flags) \
+          --wait --wait-for-jobs --debug \
+          kuadrant-instances \
+          kuadrant-instances
+      else
+        echo "Skipping Kuadrant instances install (install-kuadrant=false)"
+      fi
     volumeMounts:
       - mountPath: /mount/values-additional-manifests
         name: values-additional-manifests

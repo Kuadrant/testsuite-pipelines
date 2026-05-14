@@ -1,0 +1,140 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: run-e2e-tests
+spec:
+  params:
+    - description: Path to workspace kubeconfig
+      name: kubeconfig-path
+      type: string
+  steps:
+    - name: run-e2e-tests
+      image: quay.io/kuadrant/testsuite-pipelines-tools:latest
+      imagePullPolicy: Always
+      env:
+      - name: KUBECONFIG
+        value: $(params.kubeconfig-path)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # Populate env vars required for e2e tests
+        export MCP_GATEWAY_NAMESPACE=mcp-system
+        export MCP_GATEWAY_HOST="mcp.apps.$(oc get dns cluster -o jsonpath='{.spec.baseDomain}')"
+        export GATEWAY_URL="https://${MCP_GATEWAY_HOST}/mcp"
+        export GATEWAY_CLASS_NAME=openshift-default
+        export E2E_DOMAIN="apps.$(oc get dns cluster -o jsonpath='{.spec.baseDomain}')"
+        export E2E_SCHEME=https
+        export E2E_PLATFORM=openshift
+        export E2E_TIMEOUT=90m
+
+        # TODO populate env vars required for "Auth" e2e tests here
+
+        # create mcp-test namespace if it does not exist
+        oc create namespace mcp-test --dry-run=client -o yaml | oc apply -f -
+
+        cd "$(workspaces.shared-workspace.path)/mcp-gateway"
+
+        # deploy and register test MCP servers
+        oc apply -k config/test-servers/
+        # patch imagePullPolicy to pull the image from remote registry
+        for dep in $(oc get deployments -n mcp-test -o jsonpath='{.items[*].metadata.name}'); do
+          oc patch deployment "$dep" -n mcp-test --type='json' -p='[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Always"}]'
+        done
+        # wait for test MCP servers to get ready
+        oc wait --for=condition=available --timeout=180s deployment/mcp-test-server1 -n mcp-test
+        oc wait --for=condition=available --timeout=180s deployment/mcp-test-server2 -n mcp-test
+
+        # deploy redis
+        oc apply -f config/mcp-gateway/overlays/mcp-system/redis-deployment.yaml -n "$MCP_GATEWAY_NAMESPACE"
+        oc apply -f config/mcp-gateway/overlays/mcp-system/redis-service.yaml -n $MCP_GATEWAY_NAMESPACE
+        oc rollout status deployment/redis -n $MCP_GATEWAY_NAMESPACE --timeout=60s
+
+        make deploy-e2e-gateways-openshift
+
+        # create OpenShift Routes for e2e Gateways
+        kubectl apply -f - <<EOF
+        apiVersion: route.openshift.io/v1
+        kind: Route
+        metadata:
+          name: e2e-1
+          namespace: gateway-system
+        spec:
+          host: e2e-1.${E2E_DOMAIN}
+          tls:
+            insecureEdgeTerminationPolicy: Redirect
+            termination: edge
+          port:
+            targetPort: mcp
+          to:
+            kind: Service
+            name: e2e-1-openshift-default
+            weight: 100
+          wildcardPolicy: None
+        EOF
+
+        kubectl apply -f - <<EOF
+        apiVersion: route.openshift.io/v1
+        kind: Route
+        metadata:
+          name: e2e-2
+          namespace: gateway-system
+        spec:
+          host: e2e-2.${E2E_DOMAIN}
+          tls:
+            insecureEdgeTerminationPolicy: Redirect
+            termination: edge
+          port:
+            targetPort: mcp
+          to:
+            kind: Service
+            name: e2e-2-openshift-default
+            weight: 100
+          wildcardPolicy: None
+        EOF
+
+        kubectl apply -f - <<EOF
+        apiVersion: route.openshift.io/v1
+        kind: Route
+        metadata:
+          name: shared-gateway-team-a
+          namespace: gateway-system
+        spec:
+          host: team-a.${E2E_DOMAIN}
+          tls:
+            insecureEdgeTerminationPolicy: Redirect
+            termination: edge
+          port:
+            targetPort: team-a-mcp
+          to:
+            kind: Service
+            name: shared-gateway-openshift-default
+            weight: 100
+          wildcardPolicy: None
+        EOF
+
+        kubectl apply -f - <<EOF
+        apiVersion: route.openshift.io/v1
+        kind: Route
+        metadata:
+          name: shared-gateway-team-b
+          namespace: gateway-system
+        spec:
+          host: team-b.${E2E_DOMAIN}
+          tls:
+            insecureEdgeTerminationPolicy: Redirect
+            termination: edge
+          port:
+            targetPort: team-b-mcp
+          to:
+            kind: Service
+            name: shared-gateway-openshift-default
+            weight: 100
+          wildcardPolicy: None
+        EOF
+
+        make test-e2e-run
+        # make test-e2e-cleanup
+
+  workspaces:
+    - name: shared-workspace
