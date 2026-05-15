@@ -20,10 +20,6 @@ spec:
     command:
       - /bin/bash
       - -c
-    computeResources:
-      limits:
-        cpu: 250m
-        memory: 128Mi
     image: quay.io/kuadrant/testsuite-pipelines-tools:latest
     imagePullPolicy: Always
   workspaces:

@@ -9,10 +9,6 @@ spec:
       type: string
   steps:
     - name: wait-for-job-to-complete
-      computeResources:
-        limits:
-          cpu: '100m'
-          memory: 64Mi
       image: quay.io/kuadrant/testsuite-pipelines-tools:latest
       imagePullPolicy: Always
       env:

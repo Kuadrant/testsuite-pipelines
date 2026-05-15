@@ -7,11 +7,7 @@ spec:
   workspaces:
     - name: shared-workspace
   steps:
-    - computeResources:
-        limits:
-          cpu: '100m'
-          memory: 64Mi
-      image: quay.io/kuadrant/testsuite-pipelines-tools:latest
+    - image: quay.io/kuadrant/testsuite-pipelines-tools:latest
       imagePullPolicy: Always
       env:
         - name: NAMESPACE
