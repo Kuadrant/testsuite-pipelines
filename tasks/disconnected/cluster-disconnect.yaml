@@ -1,0 +1,229 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: disconnected-cluster-network
+spec:
+  description: 'Disconnect or reconnect cluster nodes from external network via iptables'
+  params:
+    - name: kubeconfig-path
+      type: string
+    - name: action
+      type: string
+      description: 'Action to perform: disconnect, reconnect, or status'
+      default: disconnect
+    - name: downstream
+      type: string
+      description: 'Set to "true" for downstream (RHCL) operator, any other value for upstream (Kuadrant)'
+      default: "true"
+  steps:
+    - name: cluster-network
+      image: quay.io/kuadrant/testsuite-pipelines-tools:latest
+      imagePullPolicy: Always
+      timeout: 15m
+      env:
+        - name: KUBECONFIG
+          value: $(params.kubeconfig-path)
+        - name: ACTION
+          value: $(params.action)
+        - name: DOWNSTREAM
+          value: $(params.downstream)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        NODE_NAMES=$(oc get nodes -o name | cut -d'/' -f2)
+
+        if [ -z "$NODE_NAMES" ]; then
+            echo "ERROR: Could not find any nodes in the cluster"
+            exit 1
+        fi
+
+        NODE_COUNT=$(echo "$NODE_NAMES" | wc -l)
+
+        if [ "$DOWNSTREAM" = "true" ]; then
+            EXTERNAL_REGISTRIES="registry\.redhat\.io/rhcl-1/|registry\.access\.redhat\.com/rhcl-1/"
+        else
+            EXTERNAL_REGISTRIES="quay\.io/kuadrant/"
+        fi
+
+        case "$ACTION" in
+            disconnect)
+                echo "==> Disconnecting cluster from external network"
+                echo "  Nodes (${NODE_COUNT}):"
+                for NODE_NAME in $NODE_NAMES; do
+                    echo "    - ${NODE_NAME}"
+                done
+                echo ""
+
+                echo "Applying iptables rules to block external access..."
+                echo ""
+
+                for NODE_NAME in $NODE_NAMES; do
+                    echo "  Node: ${NODE_NAME}"
+
+                    oc debug -n default node/${NODE_NAME} -- chroot /host /bin/bash -c "
+                        # Save current rules
+                        iptables-save > /tmp/iptables-before-disconnect.rules
+
+                        # Clear OUTPUT chain
+                        iptables -F OUTPUT
+
+                        # Allow established connections and loopback
+                        iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+                        iptables -A OUTPUT -o lo -j ACCEPT
+
+                        # Allow DNS to cluster DNS (needed for internal resolution)
+                        iptables -A OUTPUT -p udp --dport 53 -d 10.0.0.0/8 -j ACCEPT
+                        iptables -A OUTPUT -p tcp --dport 53 -d 10.0.0.0/8 -j ACCEPT
+
+                        # Allow access to local networks (RFC 1918 private networks)
+                        iptables -A OUTPUT -d 10.0.0.0/8 -j ACCEPT
+                        iptables -A OUTPUT -d 172.16.0.0/12 -j ACCEPT
+                        iptables -A OUTPUT -d 192.168.0.0/16 -j ACCEPT
+
+                        # Allow access to link-local (needed for some internal services)
+                        iptables -A OUTPUT -d 169.254.0.0/16 -j ACCEPT
+
+                        # Log blocked external attempts (optional, for debugging)
+                        iptables -A OUTPUT -m limit --limit 5/min -j LOG --log-prefix 'BLOCKED-EXT: ' --log-level 4
+
+                        # Block everything else (external internet)
+                        iptables -A OUTPUT -j REJECT --reject-with icmp-host-unreachable
+
+                        echo '    iptables rules applied'
+                    "
+                done
+
+                echo ""
+                echo "==> Cleaning cached operator images (preserving platform images)"
+                echo "  This ensures operator pods must pull from the mirror registry"
+                echo ""
+
+                for NODE_NAME in $NODE_NAMES; do
+                    echo "  Node: ${NODE_NAME}"
+                    oc debug -n default node/${NODE_NAME} -- chroot /host /bin/bash -c "
+                        REMOVED=0
+                        # Remove operator images by repo tag
+                        for img in \$(crictl images -o json | jq -r '.images[].repoTags[]? // empty' | grep -E '^(${EXTERNAL_REGISTRIES})' || true); do
+                            crictl rmi \"\$img\" 2>/dev/null && REMOVED=\$((REMOVED + 1)) || true
+                        done
+                        # Remove operator images by repo digest (tagless images)
+                        for img in \$(crictl images -o json | jq -r '.images[] | select((.repoTags == null) or (.repoTags | length == 0)) | .repoDigests[]? // empty' | grep -E '^(${EXTERNAL_REGISTRIES})' || true); do
+                            crictl rmi \"\$img\" 2>/dev/null && REMOVED=\$((REMOVED + 1)) || true
+                        done
+                        echo \"    Removed \${REMOVED} cached operator image(s)\"
+                    "
+                done
+
+                echo ""
+                echo "==> Testing disconnected state"
+
+                DISCONNECT_OK=true
+                for NODE_NAME in $NODE_NAMES; do
+                    echo -n "  ${NODE_NAME} - external access: "
+                    if oc debug -n default node/${NODE_NAME} -- chroot /host timeout 5 curl -I https://quay.io 2>/dev/null > /dev/null 2>&1; then
+                        echo "NOT BLOCKED"
+                        DISCONNECT_OK=false
+                    else
+                        echo "BLOCKED (as expected)"
+                    fi
+                done
+
+                echo -n "  Internal (Kubernetes API): "
+                INTERNAL_TEST=$(oc get --raw /healthz 2>/dev/null && echo "ok" || echo "failed")
+                if [ "$INTERNAL_TEST" = "ok" ]; then
+                    echo "WORKS (as expected)"
+                else
+                    echo "FAILED - Internal access blocked!"
+                fi
+
+                echo ""
+                if [ "$DISCONNECT_OK" = true ]; then
+                    echo "Cluster Disconnected (all ${NODE_COUNT} nodes)"
+                else
+                    echo "WARNING: Cluster Partially Disconnected"
+                fi
+                echo ""
+                ;;
+
+            reconnect)
+                echo "==> Reconnecting cluster to external network"
+                echo "  Nodes (${NODE_COUNT}):"
+                for NODE_NAME in $NODE_NAMES; do
+                    echo "    - ${NODE_NAME}"
+                done
+                echo ""
+
+                echo "Restoring original iptables rules..."
+
+                for NODE_NAME in $NODE_NAMES; do
+                    echo "  Node: ${NODE_NAME}"
+
+                    oc debug -n default node/${NODE_NAME} -- chroot /host /bin/bash -c "
+                        if [ -f /tmp/iptables-before-disconnect.rules ]; then
+                            iptables-restore < /tmp/iptables-before-disconnect.rules
+                            rm -f /tmp/iptables-before-disconnect.rules
+                            echo '    Original iptables rules restored'
+                        else
+                            # If backup doesn't exist, just flush OUTPUT chain (restore default ACCEPT)
+                            iptables -F OUTPUT
+                            iptables -P OUTPUT ACCEPT
+                            echo '    iptables OUTPUT chain flushed (default ACCEPT policy)'
+                        fi
+                    "
+                done
+
+                echo ""
+                echo "==> Testing reconnected state"
+
+                RECONNECT_OK=true
+                for NODE_NAME in $NODE_NAMES; do
+                    echo -n "  ${NODE_NAME} - external access: "
+                    if oc debug -n default node/${NODE_NAME} -- chroot /host timeout 5 curl -I https://quay.io 2>/dev/null > /dev/null 2>&1; then
+                        echo "WORKS (reconnected)"
+                    else
+                        echo "STILL BLOCKED"
+                        RECONNECT_OK=false
+                    fi
+                done
+
+                echo ""
+                if [ "$RECONNECT_OK" = true ]; then
+                    echo "Cluster Reconnected (all ${NODE_COUNT} nodes)"
+                else
+                    echo "WARNING: Cluster Partially Reconnected"
+                fi
+                echo ""
+                ;;
+
+            status)
+                echo "==> Checking network connectivity"
+                echo "  Nodes (${NODE_COUNT}):"
+                echo ""
+
+                for NODE_NAME in $NODE_NAMES; do
+                    echo -n "  ${NODE_NAME} - external (quay.io): "
+                    if oc debug -n default node/${NODE_NAME} -- chroot /host timeout 5 curl -I https://quay.io 2>/dev/null > /dev/null 2>&1; then
+                        echo "CONNECTED"
+                    else
+                        echo "DISCONNECTED"
+                    fi
+                done
+
+                echo ""
+                echo -n "  Internal (Kubernetes API): "
+                if oc get --raw /healthz &>/dev/null; then
+                    echo "CONNECTED"
+                else
+                    echo "DISCONNECTED"
+                fi
+                echo ""
+                ;;
+
+            *)
+                echo "ERROR: Unknown action '${ACTION}'. Use: disconnect, reconnect, or status"
+                exit 1
+                ;;
+        esac
+  workspaces:
+    - name: shared-workspace
