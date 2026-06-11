@@ -1,0 +1,821 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: disconnected-setup
+spec:
+  description: 'Set up in-cluster mirror registry, mirror operator images, configure cluster for disconnected install'
+  params:
+    - name: kubeconfig-path
+      type: string
+    - name: registry-credentials
+      type: string
+      description: 'Kubernetes secret name (dockerconfigjson) with source registry credentials for image mirroring'
+      default: registry-redhat-io-pull-secret
+  steps:
+    - name: setup-disconnected
+      image: quay.io/kuadrant/testsuite-pipelines-tools:latest
+      imagePullPolicy: Always
+      timeout: 2h
+      env:
+        - name: KUBECONFIG
+          value: $(params.kubeconfig-path)
+        - name: WORK_DIR
+          value: $(workspaces.shared-workspace.path)/disconnected-install
+        - name: DOWNSTREAM
+          value: "true"
+        - name: DISABLE_DEFAULT_SOURCES
+          value: "true"
+      volumeMounts:
+        - name: registry-creds
+          mountPath: /var/registry-auth
+          readOnly: true
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        echo "==> Testing Disconnected Installation with oc-mirror"
+        echo ""
+
+        # Verify cluster access
+        if ! oc whoami &>/dev/null; then
+            echo "ERROR: Not logged into OpenShift cluster"
+            exit 1
+        fi
+
+        # Install oc-mirror if not present
+        if ! command -v oc-mirror &>/dev/null; then
+            echo "==> Installing oc-mirror..."
+            OCP_VERSION=$(oc get clusterversion version -o jsonpath='{.status.desired.version}' 2>/dev/null || echo "")
+            if [ -z "$OCP_VERSION" ]; then
+                echo "ERROR: Could not detect OCP version for oc-mirror download"
+                exit 1
+            fi
+            OCP_MINOR=$(echo "$OCP_VERSION" | cut -d. -f1,2)
+            curl -sL "https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-${OCP_MINOR}/oc-mirror.rhel9.tar.gz" \
+              -o /tmp/oc-mirror.tar.gz
+            tar xzf /tmp/oc-mirror.tar.gz -C /usr/local/bin/
+            chmod +x /usr/local/bin/oc-mirror
+            rm -f /tmp/oc-mirror.tar.gz
+            echo "  oc-mirror installed"
+            echo ""
+        fi
+
+        # Set up registry auth from mounted secret
+        if [ -f /var/registry-auth/.dockerconfigjson ]; then
+            mkdir -p "$HOME/.docker"
+            cp /var/registry-auth/.dockerconfigjson "$HOME/.docker/config.json"
+            echo "Registry auth configured from secret"
+        else
+            echo "WARNING: No registry credentials found at /var/registry-auth/.dockerconfigjson"
+            echo "  Downstream mirroring from registry.redhat.io may fail"
+        fi
+        echo ""
+
+        # Configuration
+        mkdir -p "${WORK_DIR}"
+
+        REGISTRY="${REGISTRY:-quay.io}"
+        ORG="${ORG:-kuadrant}"
+        IMAGE_TAG="${IMAGE_TAG:-latest}"
+
+        # Catalog image and operator package name depend on mode
+        if [ "$DOWNSTREAM" = "true" ]; then
+            # Downstream RHCL: use Red Hat operator index, auto-detect OCP version
+            OCP_VERSION=$(oc get clusterversion version -o jsonpath='{.status.desired.version}' 2>/dev/null || echo "")
+            if [ -z "$OCP_VERSION" ]; then
+                echo "ERROR: Could not detect OCP version from cluster"
+                exit 1
+            fi
+            OCP_MINOR=$(echo "$OCP_VERSION" | cut -d. -f1,2)
+            CATALOG_IMG="registry.redhat.io/redhat/redhat-operator-index:v${OCP_MINOR}"
+            OPERATOR_PACKAGE="rhcl-operator"
+        else
+            # Upstream Kuadrant: use combined catalog from quay.io
+            CATALOG_IMG="${REGISTRY}/${ORG}/kuadrant-operator-catalog:${IMAGE_TAG}"
+            OPERATOR_PACKAGE="kuadrant-operator"
+        fi
+
+        MIRROR_NAMESPACE="mirror-registry"
+
+        echo "==> Configuration:"
+        echo "  Mode: $([ "$DOWNSTREAM" = "true" ] && echo "downstream (RHCL)" || echo "upstream (Kuadrant)")"
+        echo "  Working Directory: ${WORK_DIR}"
+        echo "  Catalog Image: ${CATALOG_IMG}"
+        echo "  Operator Package: ${OPERATOR_PACKAGE}"
+        echo "  Mirror Namespace: ${MIRROR_NAMESPACE}"
+        echo ""
+
+        # Step 1: Deploy simple Docker registry
+        echo "==> Setting up simple Docker registry for mirroring"
+
+        echo "  Ensuring namespace exists..."
+        oc new-project ${MIRROR_NAMESPACE} 2>/dev/null || echo "  Namespace ${MIRROR_NAMESPACE} already exists"
+
+        # Check if Docker registry already deployed
+        if oc get deployment docker-registry -n ${MIRROR_NAMESPACE} &>/dev/null; then
+            echo "  Docker registry already deployed"
+        else
+            echo "  Deploying simple Docker registry..."
+            cat <<EOF | oc apply -f -
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: registry-storage
+          namespace: ${MIRROR_NAMESPACE}
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 30Gi
+        ---
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: docker-registry
+          namespace: ${MIRROR_NAMESPACE}
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: docker-registry
+          template:
+            metadata:
+              labels:
+                app: docker-registry
+            spec:
+              containers:
+              - name: registry
+                image: quay.io/libpod/registry:2
+                ports:
+                - containerPort: 5000
+                volumeMounts:
+                - name: registry-storage
+                  mountPath: /var/lib/registry
+                env:
+                - name: REGISTRY_HTTP_ADDR
+                  value: ":5000"
+                - name: REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY
+                  value: /var/lib/registry
+              volumes:
+              - name: registry-storage
+                persistentVolumeClaim:
+                  claimName: registry-storage
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: docker-registry
+          namespace: ${MIRROR_NAMESPACE}
+        spec:
+          selector:
+            app: docker-registry
+          ports:
+          - port: 5000
+            targetPort: 5000
+        EOF
+
+            # Create Route
+            if ! oc get route docker-registry -n ${MIRROR_NAMESPACE} &>/dev/null; then
+                oc create route edge docker-registry \
+                  --service=docker-registry \
+                  --port=5000 \
+                  -n ${MIRROR_NAMESPACE}
+            fi
+
+            # Wait for registry to be ready
+            echo "  Waiting for registry to be ready..."
+            oc wait --for=condition=available deployment/docker-registry \
+              -n ${MIRROR_NAMESPACE} \
+              --timeout=5m
+        fi
+
+        # Get registry hostname
+        REGISTRY_HOSTNAME=$(oc get route docker-registry -n ${MIRROR_NAMESPACE} -o jsonpath='{.spec.host}')
+
+        if [ -z "$REGISTRY_HOSTNAME" ]; then
+            echo "  ERROR: Could not determine registry hostname"
+            oc get routes -n ${MIRROR_NAMESPACE}
+            exit 1
+        fi
+
+        echo "  Docker registry route: ${REGISTRY_HOSTNAME}"
+        echo ""
+
+        # Wait for registry HTTP endpoint
+        echo "  Waiting for registry HTTP endpoint to respond (90s timeout)..."
+        TIMEOUT=90
+        ELAPSED=0
+        REGISTRY_READY=false
+        while [ $ELAPSED -lt $TIMEOUT ]; do
+            HTTP_STATUS=$(curl -k -s -o /dev/null -w "%{http_code}" https://${REGISTRY_HOSTNAME}/v2/ 2>/dev/null || echo "000")
+            if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "401" ]; then
+                echo "  Registry HTTP endpoint ready (HTTP ${HTTP_STATUS})"
+                REGISTRY_READY=true
+                break
+            fi
+            sleep 3
+            ELAPSED=$((ELAPSED + 3))
+            if [ $((ELAPSED % 15)) -eq 0 ]; then
+                echo "  Still waiting... (${ELAPSED}s) [HTTP ${HTTP_STATUS}]"
+            fi
+        done
+
+        if [ "$REGISTRY_READY" = false ]; then
+            echo "  Registry HTTP endpoint not ready after ${TIMEOUT}s"
+            oc get deployment docker-registry -n ${MIRROR_NAMESPACE}
+            oc get pods -n ${MIRROR_NAMESPACE} -l app=docker-registry
+            oc logs -n ${MIRROR_NAMESPACE} -l app=docker-registry --tail=20
+            exit 1
+        fi
+        echo ""
+
+        # Step 1.5: Configure CA trust for mirror registry
+        echo "==> Configuring CA trust for mirror registry"
+
+        # Get the ingress CA certificate
+        INGRESS_CA=$(oc get configmap -n openshift-config-managed default-ingress-cert -o jsonpath='{.data.ca-bundle\.crt}')
+
+        if [ -n "$INGRESS_CA" ]; then
+            # Check if registry-certs configmap exists
+            if oc get configmap registry-certs -n openshift-config &>/dev/null; then
+                echo "  Updating existing registry-certs configmap..."
+                TEMP_CA_FILE="${WORK_DIR}/ca-bundle.crt"
+                echo "${INGRESS_CA}" > "${TEMP_CA_FILE}"
+                oc patch configmap registry-certs -n openshift-config --type merge \
+                    --patch "{\"data\":{\"${REGISTRY_HOSTNAME}\":$(cat ${TEMP_CA_FILE} | jq -Rs .)}}"
+                rm -f "${TEMP_CA_FILE}"
+            else
+                echo "  Creating registry-certs configmap..."
+                TEMP_CA_FILE="${WORK_DIR}/ca-bundle.crt"
+                echo "${INGRESS_CA}" > "${TEMP_CA_FILE}"
+                oc create configmap registry-certs -n openshift-config \
+                    --from-file="${REGISTRY_HOSTNAME}=${TEMP_CA_FILE}"
+                rm -f "${TEMP_CA_FILE}"
+            fi
+
+            # Update image.config.openshift.io/cluster to reference the configmap
+            if ! oc get image.config.openshift.io/cluster -o yaml | grep -q "registry-certs"; then
+                echo "  Configuring cluster to use registry-certs..."
+                oc patch image.config.openshift.io/cluster --type merge \
+                    -p '{"spec":{"additionalTrustedCA":{"name":"registry-certs"}}}'
+            fi
+
+            echo "  CA trust configured for ${REGISTRY_HOSTNAME}"
+        else
+            echo "  WARNING: Could not get ingress CA certificate"
+        fi
+        echo ""
+
+        # Step 2: Create ImageSetConfiguration
+        echo "==> Creating ImageSetConfiguration"
+        IMAGESET_CONFIG="${WORK_DIR}/imageset-config.yaml"
+
+        if [ "$DOWNSTREAM" = "true" ]; then
+            cat <<EOF > ${IMAGESET_CONFIG}
+        kind: ImageSetConfiguration
+        apiVersion: mirror.openshift.io/v2alpha1
+        mirror:
+          operators:
+            - catalog: ${CATALOG_IMG}
+              packages:
+                - name: rhcl-operator
+                - name: authorino-operator
+                - name: limitador-operator
+                - name: dns-operator
+          additionalImages:
+            - name: quay.io/kuadrant/httpbin:latest
+            - name: registry.istio.io/release/pilot@sha256:3681fe197870abad5c953107e241e104a813ba2d6e63933ff53e0545348ff8b1
+            - name: registry.istio.io/release/proxyv2@sha256:69ca4585993f4057861954f18be88df8268b713d114e7036bf9b185458c7a2c1
+            - name: registry.istio.io/release/install-cni@sha256:c83945796021a2992ceec8b8e672b1c19771e3906555a3a1dd467eddf2b82b4d
+        EOF
+        else
+            cat <<EOF > ${IMAGESET_CONFIG}
+        kind: ImageSetConfiguration
+        apiVersion: mirror.openshift.io/v2alpha1
+        mirror:
+          operators:
+            - catalog: ${CATALOG_IMG}
+              full: true
+          additionalImages:
+            - name: quay.io/kuadrant/httpbin:latest
+            - name: registry.istio.io/release/pilot@sha256:3681fe197870abad5c953107e241e104a813ba2d6e63933ff53e0545348ff8b1
+            - name: registry.istio.io/release/proxyv2@sha256:69ca4585993f4057861954f18be88df8268b713d114e7036bf9b185458c7a2c1
+            - name: registry.istio.io/release/install-cni@sha256:c83945796021a2992ceec8b8e672b1c19771e3906555a3a1dd467eddf2b82b4d
+        EOF
+        fi
+
+        cat ${IMAGESET_CONFIG}
+        echo ""
+
+        # Step 3: Run oc-mirror
+        echo "==> Running oc-mirror v2 (this may take several minutes)..."
+        echo "  Source Catalog: ${CATALOG_IMG}"
+        echo "  Destination: ${REGISTRY_HOSTNAME}"
+        echo ""
+
+        oc-mirror --v2 --config ${IMAGESET_CONFIG} \
+          --workspace file://${WORK_DIR}/oc-mirror-workspace \
+          --dest-tls-verify=false \
+          --image-timeout 30m \
+          docker://${REGISTRY_HOSTNAME}
+
+        echo ""
+        echo "==> oc-mirror completed"
+        echo ""
+
+        # Step 4: Apply image mirror configuration
+        echo "==> Applying image mirror configuration"
+
+        # oc-mirror v2 puts files in working-dir/cluster-resources
+        RESULTS_DIR="${WORK_DIR}/oc-mirror-workspace/working-dir/cluster-resources"
+
+        if [ ! -d "$RESULTS_DIR" ]; then
+            echo "ERROR: Results directory not found at ${RESULTS_DIR}"
+            exit 1
+        fi
+
+        # oc-mirror v2 can generate IDMS, ITMS, or ICSP depending on how images were mirrored
+        IDMS_FILE="${RESULTS_DIR}/idms-oc-mirror.yaml"
+        ITMS_FILE="${RESULTS_DIR}/itms-oc-mirror.yaml"
+        ICSP_FILE="${RESULTS_DIR}/icsp-oc-mirror.yaml"
+
+        APPLIED_ANY=false
+
+        if [ -f "$IDMS_FILE" ]; then
+            echo "  Applying ImageDigestMirrorSet..."
+            oc apply -f ${IDMS_FILE}
+            oc get imagedigestmirrorset
+            APPLIED_ANY=true
+        fi
+
+        if [ -f "$ITMS_FILE" ]; then
+            echo "  Applying ImageTagMirrorSet..."
+            oc apply -f ${ITMS_FILE}
+            oc get imagetagmirrorset
+            APPLIED_ANY=true
+        fi
+
+        if [ -f "$ICSP_FILE" ]; then
+            echo "  Applying ImageContentSourcePolicy..."
+            oc apply -f ${ICSP_FILE}
+            oc get imagecontentsourcepolicy
+            APPLIED_ANY=true
+        fi
+
+        if [ "$APPLIED_ANY" = false ]; then
+            echo "ERROR: No image mirror configuration found"
+            ls -la ${RESULTS_DIR}/
+            exit 1
+        fi
+        echo ""
+
+        # Add ImageTagMirrorSet for Istio registry (needed for tag-based pulls)
+        echo "  Creating additional ImageTagMirrorSet for Istio images..."
+        cat <<EOF | oc apply -f -
+        apiVersion: config.openshift.io/v1
+        kind: ImageTagMirrorSet
+        metadata:
+          name: itms-istio
+          labels:
+            kuadrant.io/disconnected-test: "true"
+        spec:
+          imageTagMirrors:
+          - mirrors:
+            - ${REGISTRY_HOSTNAME}/release
+            source: registry.istio.io/release
+        EOF
+        echo "  Istio ImageTagMirrorSet created"
+        echo ""
+
+        # Step 5: Wait for cluster to stabilize after IDMS/ITMS changes
+        echo "==> Waiting for cluster to stabilize after image mirror configuration"
+        echo ""
+
+        # Give the cluster a moment to start processing the changes
+        sleep 5
+
+        # Check if this is a single-node cluster
+        NODE_COUNT=$(oc get nodes --no-headers 2>/dev/null | wc -l)
+        IS_SINGLE_NODE=false
+        if [ "$NODE_COUNT" -eq 1 ]; then
+            IS_SINGLE_NODE=true
+            echo "  Detected single-node cluster"
+        fi
+        echo ""
+
+        # Wait for openshift-apiserver to stabilize (critical for API access)
+        echo "  Waiting for openshift-apiserver to stabilize..."
+        APISERVER_TIMEOUT=300
+        APISERVER_STABLE=false
+        START_TIME=$(date +%s)
+
+        while [ $(($(date +%s) - START_TIME)) -lt $APISERVER_TIMEOUT ]; do
+            APISERVER_AVAILABLE=$(oc get co openshift-apiserver -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+            APISERVER_PROGRESSING=$(oc get co openshift-apiserver -o jsonpath='{.status.conditions[?(@.type=="Progressing")].status}' 2>/dev/null)
+            APISERVER_DEGRADED=$(oc get co openshift-apiserver -o jsonpath='{.status.conditions[?(@.type=="Degraded")].status}' 2>/dev/null)
+
+            if [ "$APISERVER_AVAILABLE" = "True" ] && [ "$APISERVER_PROGRESSING" = "False" ] && [ "$APISERVER_DEGRADED" = "False" ]; then
+                APISERVER_STABLE=true
+                echo "  openshift-apiserver is stable"
+                break
+            fi
+
+            # On single-node clusters, check for stuck apiserver pods due to anti-affinity
+            if [ "$IS_SINGLE_NODE" = true ]; then
+                PENDING_PODS=$(oc get pods -n openshift-apiserver --no-headers 2>/dev/null | grep -c "Pending" || echo "0")
+                TERMINATING_PODS=$(oc get pods -n openshift-apiserver --no-headers 2>/dev/null | grep -c "Terminating" || echo "0")
+
+                if [ "$PENDING_PODS" -gt 0 ] && [ "$TERMINATING_PODS" -gt 0 ]; then
+                    echo "  Detected stuck pod transition (anti-affinity on single-node)"
+                    echo "  Force-deleting terminating pods..."
+                    oc get pods -n openshift-apiserver --no-headers 2>/dev/null | grep "Terminating" | awk '{print $1}' | while read pod; do
+                        oc delete pod -n openshift-apiserver "$pod" --force --grace-period=0 2>/dev/null || true
+                    done
+                    sleep 10
+                fi
+            fi
+
+            echo "  Waiting... (Available: $APISERVER_AVAILABLE, Progressing: $APISERVER_PROGRESSING, Degraded: $APISERVER_DEGRADED)"
+            sleep 10
+        done
+
+        if [ "$APISERVER_STABLE" = false ]; then
+            echo "  WARNING: openshift-apiserver did not stabilize within ${APISERVER_TIMEOUT}s"
+            echo "  Continuing anyway (pipeline context)..."
+        fi
+        echo ""
+
+        # Step 6: Wait for MachineConfig rollout
+        echo "==> Checking MachineConfig status"
+
+        if oc get mcp -o json | jq -e '.items[] | select(.status.conditions[] | select(.type=="Updating" and .status=="True"))' &>/dev/null; then
+            echo "  MachineConfigPool is updating..."
+            echo "  Waiting for rollout (timeout: 30m)..."
+            oc wait mcp --all --for=condition=Updated --timeout=30m || {
+                echo "  WARNING: MachineConfig rollout timed out"
+            }
+        else
+            echo "  No MachineConfigPool updates needed"
+        fi
+        echo ""
+
+        # Step 7: Apply CatalogSource
+        echo "==> Creating CatalogSource"
+
+        # oc-mirror v2 generates CatalogSource file for the catalog
+        CATALOG_FILE=$(find ${RESULTS_DIR} -name "cs-*.yaml" -o -name "catalogSource-*.yaml" 2>/dev/null | head -1)
+
+        if [ -z "$CATALOG_FILE" ]; then
+            echo "  ERROR: No CatalogSource file found in ${RESULTS_DIR}"
+            ls -la ${RESULTS_DIR}/
+            exit 1
+        fi
+
+        # Rename CatalogSource for clarity
+        ORIGINAL_NAME=$(grep '^  name:' ${CATALOG_FILE} | head -1 | awk '{print $2}')
+        NEW_NAME="kuadrant-disconnected-operator-catalog"
+
+        echo "  Renaming CatalogSource: ${ORIGINAL_NAME} -> ${NEW_NAME}"
+
+        # Update the name and add a label for easy identification
+        sed -i "s/name: ${ORIGINAL_NAME}/name: ${NEW_NAME}/" ${CATALOG_FILE}
+        # Add disconnected-test label for easy cleanup
+        sed -i '/^  name: '"${NEW_NAME}"'/a\  labels:\n    kuadrant.io/disconnected-test: "true"' ${CATALOG_FILE}
+
+        oc apply -f ${CATALOG_FILE}
+        echo ""
+
+        # Step 8: Wait for CatalogSource to be ready
+        echo "==> Waiting for CatalogSource to be ready"
+
+        # Give OLM a moment to process the CatalogSource
+        sleep 5
+
+        # Find the catalog name (using the label we added)
+        CATALOG_NAME=$(oc get catalogsource -n openshift-marketplace -l kuadrant.io/disconnected-test=true -o name | cut -d'/' -f2)
+
+        if [ -z "$CATALOG_NAME" ]; then
+            echo "  ERROR: Kuadrant CatalogSource not found"
+            oc get catalogsource -n openshift-marketplace
+            exit 1
+        fi
+
+        echo "  Waiting for catalog: ${CATALOG_NAME}"
+
+        # CatalogSource doesn't use standard conditions - check connectionState instead
+        CATALOG_TIMEOUT=300
+        CATALOG_READY=false
+        START_TIME=$(date +%s)
+
+        while [ $(($(date +%s) - START_TIME)) -lt $CATALOG_TIMEOUT ]; do
+            LAST_STATE=$(oc get catalogsource ${CATALOG_NAME} -n openshift-marketplace \
+                -o jsonpath='{.status.connectionState.lastObservedState}' 2>/dev/null || echo "")
+
+            if [ "$LAST_STATE" = "READY" ]; then
+                CATALOG_READY=true
+                echo "    READY"
+                break
+            fi
+
+            sleep 5
+        done
+
+        if [ "$CATALOG_READY" = false ]; then
+            echo "    ERROR: Timed out waiting for catalog to be READY"
+            echo "    Current state: ${LAST_STATE}"
+            exit 1
+        fi
+        echo ""
+
+        # Step 8.5: Disable default OperatorHub sources
+        if [ "$DISABLE_DEFAULT_SOURCES" = "true" ]; then
+            echo "==> Disabling default OperatorHub sources"
+
+            # Check current state
+            CURRENT_STATE=$(oc get operatorhub cluster -o jsonpath='{.spec.disableAllDefaultSources}' 2>/dev/null || echo "false")
+
+            if [ "$CURRENT_STATE" = "true" ]; then
+                echo "  Default sources already disabled"
+            else
+                oc patch operatorhub cluster --type json \
+                    -p '[{"op": "add", "path": "/spec/disableAllDefaultSources", "value": true}]'
+                echo "  Default OperatorHub sources disabled"
+            fi
+            echo ""
+        fi
+
+        # Step 9: Verify packages are available
+        echo "==> Verifying operator packages are available"
+
+        if [ "$DOWNSTREAM" = "true" ]; then
+            EXPECTED_PACKAGES="${OPERATOR_PACKAGE}"
+        else
+            EXPECTED_PACKAGES="${OPERATOR_PACKAGE} authorino-operator limitador-operator dns-operator"
+        fi
+        PACKAGE_TIMEOUT=120
+        ALL_FOUND=false
+        START_TIME=$(date +%s)
+
+        echo "  Waiting for PackageManifests to appear from disconnected catalogs..."
+
+        while [ $(($(date +%s) - START_TIME)) -lt $PACKAGE_TIMEOUT ]; do
+            ALL_FOUND=true
+
+            for package in ${EXPECTED_PACKAGES}; do
+                FOUND_COUNT=$(oc get packagemanifest -n openshift-marketplace -o json 2>/dev/null | \
+                    jq -r ".items[] | select(.metadata.name==\"${package}\") | select(.status.catalogSource | startswith(\"kuadrant-disconnected-\")) | .metadata.name" 2>/dev/null | wc -l || echo "0")
+
+                if [ "$FOUND_COUNT" -eq 0 ]; then
+                    ALL_FOUND=false
+                    break
+                fi
+            done
+
+            if [ "$ALL_FOUND" = true ]; then
+                break
+            fi
+
+            sleep 5
+        done
+
+        echo ""
+        for package in ${EXPECTED_PACKAGES}; do
+            CATALOG_SOURCE=$(oc get packagemanifest -n openshift-marketplace -o json 2>/dev/null | \
+                jq -r ".items[] | select(.metadata.name==\"${package}\") | select(.status.catalogSource | startswith(\"kuadrant-disconnected-\")) | .status.catalogSource" 2>/dev/null | head -1)
+
+            if [ -n "$CATALOG_SOURCE" ]; then
+                echo "  ${package} (from ${CATALOG_SOURCE})"
+            else
+                echo "  ${package} (not found in disconnected catalogs)"
+                ALL_FOUND=false
+            fi
+        done
+
+        if [ "$ALL_FOUND" = false ]; then
+            echo ""
+            echo "  ERROR: Not all packages available from disconnected catalogs"
+            exit 1
+        fi
+        echo ""
+
+        # Step 10: Generate installation manifests
+        INSTALL_DIR="${WORK_DIR}/install"
+        mkdir -p "${INSTALL_DIR}"
+
+        # Use the catalog name (should be kuadrant-disconnected-operator-catalog)
+        KUADRANT_CATALOG="${CATALOG_NAME}"
+
+        # Generate Namespace manifest
+        cat > "${INSTALL_DIR}/01-namespace.yaml" <<EOF
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: kuadrant-system
+          labels:
+            kuadrant.io/disconnected-test: "true"
+        EOF
+
+        # Generate OperatorGroup manifest
+        cat > "${INSTALL_DIR}/02-operatorgroup.yaml" <<EOF
+        apiVersion: operators.coreos.com/v1
+        kind: OperatorGroup
+        metadata:
+          name: kuadrant-operator-group
+          namespace: kuadrant-system
+        spec: {}
+        EOF
+
+        # Detect default channel for operator
+        echo "Detecting default channel for ${OPERATOR_PACKAGE}..."
+        # Wait a bit for packagemanifest to be available after CatalogSource is ready
+        sleep 5
+        DEFAULT_CHANNEL=$(oc get packagemanifest ${OPERATOR_PACKAGE} -n openshift-marketplace -o jsonpath='{.status.defaultChannel}' 2>/dev/null || echo "")
+
+        if [ -z "$DEFAULT_CHANNEL" ]; then
+            # Fallback: try to get channels from packagemanifest
+            AVAILABLE_CHANNELS=$(oc get packagemanifest ${OPERATOR_PACKAGE} -n openshift-marketplace -o jsonpath='{.status.channels[*].name}' 2>/dev/null || echo "")
+            if [ -n "$AVAILABLE_CHANNELS" ]; then
+                DEFAULT_CHANNEL=$(echo "$AVAILABLE_CHANNELS" | awk '{print $1}')
+                echo "  No default channel set, using first available: ${DEFAULT_CHANNEL}"
+            else
+                DEFAULT_CHANNEL="alpha"
+                echo "  WARNING: Could not detect channel, defaulting to: ${DEFAULT_CHANNEL}"
+            fi
+        else
+            echo "  Using default channel: ${DEFAULT_CHANNEL}"
+        fi
+        echo ""
+
+        # Generate Subscription manifest
+        cat > "${INSTALL_DIR}/03-subscription.yaml" <<EOF
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+          name: ${OPERATOR_PACKAGE}
+          namespace: kuadrant-system
+        spec:
+          channel: ${DEFAULT_CHANNEL}
+          name: ${OPERATOR_PACKAGE}
+          source: ${KUADRANT_CATALOG}
+          sourceNamespace: openshift-marketplace
+          installPlanApproval: Automatic
+        EOF
+
+        # Generate Kuadrant CR manifest
+        cat > "${INSTALL_DIR}/04-kuadrant.yaml" <<EOF
+        apiVersion: kuadrant.io/v1beta1
+        kind: Kuadrant
+        metadata:
+          name: kuadrant
+          namespace: kuadrant-system
+        spec: {}
+        EOF
+
+        # Generate install script
+        cat > "${INSTALL_DIR}/install.sh" <<'SCRIPT'
+        #!/bin/bash
+        set -euo pipefail
+
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+        echo "==> Installing Kuadrant from disconnected catalogs"
+        echo ""
+
+        echo "Step 1: Creating namespace..."
+        oc apply -f "${SCRIPT_DIR}/01-namespace.yaml"
+        echo ""
+
+        echo "Step 2: Creating OperatorGroup..."
+        oc apply -f "${SCRIPT_DIR}/02-operatorgroup.yaml"
+        echo ""
+
+        echo "Step 3: Creating Subscription..."
+        oc apply -f "${SCRIPT_DIR}/03-subscription.yaml"
+        echo ""
+
+        echo "Step 4: Waiting for operator installation..."
+        echo "  (This may take 2-3 minutes)"
+        echo ""
+
+        OPERATOR_PACKAGE_NAME=$(grep '^\s*name:' "${SCRIPT_DIR}/03-subscription.yaml" | tail -1 | awk '{print $2}')
+
+        echo "  Waiting for ${OPERATOR_PACKAGE_NAME} CSV..."
+        CSV_NAME=""
+        for i in {1..60}; do
+            CSV_NAME=$(oc get csv -n kuadrant-system -o name 2>/dev/null | grep "${OPERATOR_PACKAGE_NAME}" | head -1 || true)
+            if [ -n "$CSV_NAME" ]; then
+                break
+            fi
+            sleep 5
+        done
+
+        if [ -z "$CSV_NAME" ]; then
+            echo "  ERROR: ${OPERATOR_PACKAGE_NAME} CSV did not appear within timeout"
+            oc get csv -n kuadrant-system 2>/dev/null || true
+            exit 1
+        fi
+
+        echo "  Found: ${CSV_NAME}"
+        echo "  Waiting for ${CSV_NAME} to succeed..."
+        oc wait --for=jsonpath='{.status.phase}'=Succeeded ${CSV_NAME} -n kuadrant-system --timeout=600s
+
+        echo "  Waiting for all dependency operators to be ready..."
+        oc wait --for=jsonpath='{.status.phase}'=Succeeded csv -l operators.coreos.com/${OPERATOR_PACKAGE_NAME}.kuadrant-system="" -n kuadrant-system --timeout=300s 2>/dev/null || \
+        oc wait --for=jsonpath='{.status.phase}'=Succeeded csv --all -n kuadrant-system --timeout=300s
+
+        echo ""
+        echo "Step 5: Creating Kuadrant instance..."
+
+        echo "  Waiting for Kuadrant CRD to be registered..."
+        for i in {1..60}; do
+            if oc get crd kuadrants.kuadrant.io &>/dev/null; then
+                break
+            fi
+            sleep 5
+        done
+
+        if ! oc get crd kuadrants.kuadrant.io &>/dev/null; then
+            echo "  ERROR: Kuadrant CRD not registered within timeout"
+            oc get crd | grep kuadrant || true
+            exit 1
+        fi
+
+        oc apply -f "${SCRIPT_DIR}/04-kuadrant.yaml"
+        echo ""
+
+        echo "  Waiting for Kuadrant CR to be ready..."
+        oc wait --for=jsonpath='{.status.state}'=Ready kuadrant/kuadrant -n kuadrant-system --timeout=300s 2>/dev/null || sleep 10
+
+        echo ""
+        echo "Installation Complete"
+        echo ""
+
+        echo "Installed operators:"
+        oc get csv -n kuadrant-system
+        echo ""
+
+        echo "Running pods:"
+        oc get pods -n kuadrant-system
+        echo ""
+
+        echo "Verify images are from mirror registry:"
+        oc get pods -n kuadrant-system -o jsonpath='{range .items[*]}{"\n"}{.metadata.name}{"\n"}{range .spec.containers[*]}{" "}{.image}{"\n"}{end}{end}'
+        echo ""
+        SCRIPT
+
+        chmod +x "${INSTALL_DIR}/install.sh"
+
+        # Generate uninstall script
+        cat > "${INSTALL_DIR}/uninstall.sh" <<'SCRIPT'
+        #!/bin/bash
+        set -euo pipefail
+
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+        echo "==> Uninstalling Kuadrant"
+        echo ""
+
+        echo "Deleting Kuadrant CR..."
+        oc delete -f "${SCRIPT_DIR}/04-kuadrant.yaml" --ignore-not-found
+
+        echo "Deleting Subscription..."
+        oc delete -f "${SCRIPT_DIR}/03-subscription.yaml" --ignore-not-found
+
+        echo "Deleting CSVs..."
+        oc delete csv --all -n kuadrant-system --ignore-not-found
+
+        echo "Deleting OperatorGroup..."
+        oc delete -f "${SCRIPT_DIR}/02-operatorgroup.yaml" --ignore-not-found
+
+        echo "Waiting for pods to terminate..."
+        oc wait --for=delete pod --all -n kuadrant-system --timeout=60s 2>/dev/null || true
+
+        echo "Deleting namespace..."
+        oc delete -f "${SCRIPT_DIR}/01-namespace.yaml" --ignore-not-found
+
+        echo ""
+        echo "Uninstall complete"
+        SCRIPT
+
+        chmod +x "${INSTALL_DIR}/uninstall.sh"
+
+        echo ""
+        echo "=========================================="
+        echo "Setup Complete"
+        echo "=========================================="
+        echo ""
+        echo "  ImageDigestMirrorSet created"
+        echo "  ImageTagMirrorSet created"
+        echo "  CatalogSource ready (${CATALOG_NAME})"
+        echo "  Installation manifests: ${INSTALL_DIR}/"
+        if [ "$DISABLE_DEFAULT_SOURCES" = "true" ]; then
+            echo "  Default OperatorHub sources disabled"
+        fi
+        echo ""
+  volumes:
+    - name: registry-creds
+      secret:
+        secretName: $(params.registry-credentials)
+  workspaces:
+    - name: shared-workspace
