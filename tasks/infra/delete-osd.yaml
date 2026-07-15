@@ -8,11 +8,7 @@ spec:
     - name: cluster-id
       description: cluster ID that OCM uses to identify the cluster
   steps:
-    - computeResources:
-        limits:
-          cpu: '100m'
-          memory: 64Mi
-      image: quay.io/kuadrant/testsuite-pipelines-tools:latest
+    - image: quay.io/kuadrant/testsuite-pipelines-tools:latest
       imagePullPolicy: Always
       name: delete-osd
       script: |

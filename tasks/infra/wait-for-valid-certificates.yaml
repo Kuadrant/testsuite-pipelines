@@ -10,11 +10,7 @@ spec:
     - name: api-url
       type: string
   steps:
-    - computeResources:
-        limits:
-          cpu: '100m'
-          memory: 64Mi
-      image: quay.io/kuadrant/testsuite-pipelines-tools:latest
+    - image: quay.io/kuadrant/testsuite-pipelines-tools:latest
       imagePullPolicy: Always
       name: wait-for-valid-certificates
       script: |

@@ -11,11 +11,7 @@ spec:
     - name: cluster-id
       description: Cluster ID used in OCM/HCC
   steps:
-    - computeResources:
-        limits:
-          cpu: '100m'
-          memory: 64Mi
-      image: quay.io/kuadrant/testsuite-pipelines-tools:latest
+    - image: quay.io/kuadrant/testsuite-pipelines-tools:latest
       imagePullPolicy: Always
       name: get-cluster-id
       script: |
