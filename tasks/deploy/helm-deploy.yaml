@@ -38,6 +38,9 @@ spec:
     - description: Secret name containing additional Helm values manifest (additionalManifests.yaml)
       name: additional-manifests-secret
       type: string
+    - description: Image for the standalone Kuadrant extension (e.g. quay.io/kuadrant/internal-extensions:latest). Leave empty to skip deploying extensions.
+      name: extensions-image
+      type: string
   steps:
   # Uninstall steps first(cleanup before install)
   - name: remove-leftovers-kuadrant-ns
@@ -229,12 +232,13 @@ spec:
         helm install -n=default \
           --repo https://kuadrant.io/helm-charts-olm \
           --values=/mount/values-additional-manifests/additionalManifests.yaml \
+          --values=/mount/extension-crd/extension-CRD.yaml \
           $VERSION_IMAGE_FLAGS \
           --set=kuadrant.channel="$(params.channel)" \
           --set=kuadrant.operatorName="$(params.operator-name)" \
-          --set=kuadrant.extensionsImage="" \
           --set=istio.istioProvider="$(params.istio-provider)" \
           --set=tools.enabled=true \
+          --set=kuadrant.extensionsImage="$(params.extensions-image)" \
           $(params.additional-helm-flags) \
           --wait --wait-for-jobs --debug \
           kuadrant-operators \
@@ -245,6 +249,8 @@ spec:
     volumeMounts:
       - mountPath: /mount/values-additional-manifests
         name: values-additional-manifests
+      - mountPath: /mount/extension-crd
+        name: extension-crd
     env:
       - name: KUBECONFIG
         value: $(params.kubeconfig-path)
@@ -287,6 +293,9 @@ spec:
     - secret:
         secretName: $(params.additional-manifests-secret)
       name: values-additional-manifests
+    - configMap:
+        name: extension-crd
+      name: extension-crd
       
   workspaces:
   - name: shared-workspace

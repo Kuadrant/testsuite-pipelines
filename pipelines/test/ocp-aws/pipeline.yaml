@@ -43,6 +43,10 @@ spec:
       description: Istio provider (ossm3, ocp); 'ossm3' (recommended for all Openshift versions), 'ocp' for installing Istio managed by Gateway API on OCP v4.19+ (not recommended - mTLS is not supported).
       name: istio-provider
       type: string
+    - default: "quay.io/kuadrant/internal-extensions:latest"
+      description: Image for the standalone Kuadrant extension (e.g. quay.io/kuadrant/internal-extensions:latest). Extensions are only supported on Kuadrant v1.6+ / RHCL v1.5+ (leave empty to skip deploying extensions)
+      name: extensions-image
+      type: string
     - default: ""
       description: Additional flags for helm install command, example '--set=kuadrant.installPlanApproval=Manual --set=kuadrant.startingCSV=kuadrant-operator.v1.2.0'
       name: additional-helm-flags
@@ -151,6 +155,8 @@ spec:
           value: "true"
         - name: additional-manifests-secret
           value: values-additional-manifests
+        - name: extensions-image
+          value: $(params.extensions-image)
       runAfter:
         - provision-ocp-aws
       taskRef:
