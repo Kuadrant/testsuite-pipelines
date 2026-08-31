@@ -1,0 +1,65 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: disconnected-uninstall-operators
+spec:
+  description: 'Fully uninstall Kuadrant/RHCL operators and all related cluster resources'
+  params:
+    - name: kubeconfig-path
+      type: string
+  steps:
+    - name: uninstall-operators
+      image: quay.io/kuadrant/testsuite-pipelines-tools:latest
+      imagePullPolicy: Always
+      timeout: 10m
+      env:
+        - name: KUBECONFIG
+          value: $(params.kubeconfig-path)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        NAMESPACE="kuadrant-system"
+
+        echo "==> Uninstalling Kuadrant/RHCL operators"
+        echo ""
+
+        # Step 1: Delete Kuadrant CR (let operator process finalizers)
+        if oc get kuadrant -n ${NAMESPACE} &>/dev/null 2>&1; then
+            echo "Deleting Kuadrant CR..."
+            oc delete kuadrant --all -n ${NAMESPACE} --timeout=60s 2>/dev/null || true
+        fi
+
+        # Step 2: Delete subscriptions and CSVs in kuadrant-system
+        echo "Deleting subscriptions and CSVs in ${NAMESPACE}..."
+        oc delete subscription --all -n ${NAMESPACE} --ignore-not-found 2>/dev/null || true
+        oc delete csv --all -n ${NAMESPACE} --ignore-not-found 2>/dev/null || true
+
+        # Step 3: Clean up leftover operator subscriptions and CSVs in openshift-operators
+        echo "Cleaning up leftover operator resources in openshift-operators..."
+        oc get subscription -n openshift-operators -o name 2>/dev/null | grep -iE 'authorino|limitador|dns-operator|rhcl-operator|kuadrant' | xargs -r oc delete -n openshift-operators --ignore-not-found 2>/dev/null || true
+        oc get csv -n openshift-operators -o name 2>/dev/null | grep -iE 'authorino|limitador|dns-operator|rhcl-operator|kuadrant' | xargs -r oc delete -n openshift-operators --ignore-not-found 2>/dev/null || true
+
+        # Step 4: Wait for pods to terminate, then delete namespace
+        if oc get namespace ${NAMESPACE} &>/dev/null 2>&1; then
+            echo "Deleting namespace ${NAMESPACE}..."
+            oc delete namespace ${NAMESPACE} --timeout=120s 2>/dev/null || true
+        fi
+
+        # Step 5: Delete CRDs (everything under *.kuadrant.io)
+        echo "Deleting CRDs..."
+        oc get crd -o name | grep '\.kuadrant\.io$' | xargs -r oc delete --ignore-not-found 2>/dev/null || true
+
+        # Step 6: Delete console plugin
+        echo "Deleting console plugin..."
+        oc get consoleplugin -o name 2>/dev/null | grep -i kuadrant | xargs -r oc delete --ignore-not-found 2>/dev/null || true
+
+        # Step 7: Delete cluster-scoped RBAC (OLM-generated, match by kuadrant-related names)
+        echo "Deleting cluster roles and bindings..."
+        oc get clusterrolebinding -o name 2>/dev/null | grep -E 'kuadrant|authorino|limitador|rhcl-operator|dns-operator\.' | grep -v openshift-dns-operator | xargs -r oc delete --ignore-not-found 2>/dev/null || true
+        oc get clusterrole -o name 2>/dev/null | grep -E 'kuadrant|authorino|limitador|rhcl-operator|dns-operator\.' | grep -v openshift-dns-operator | xargs -r oc delete --ignore-not-found 2>/dev/null || true
+
+        echo ""
+        echo "Uninstall complete"
+  workspaces:
+    - name: shared-workspace
