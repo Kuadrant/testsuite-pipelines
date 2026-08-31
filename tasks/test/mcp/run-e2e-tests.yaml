@@ -111,6 +111,61 @@ spec:
               insecureEdgeTerminationPolicy: Redirect
         EOF
 
+        # Add a2a-passthrough listener
+        if ! kubectl get gateway mcp-gateway -n gateway-system -o jsonpath='{.spec.listeners[*].name}' | grep -qw "a2a-passthrough"; then
+          kubectl patch gateway mcp-gateway -n gateway-system --type=json -p "[{
+            \"op\": \"add\",
+            \"path\": \"/spec/listeners/-\",
+            \"value\": {
+              \"name\": \"a2a-passthrough\",
+              \"hostname\": \"*.a2a-passthrough.$E2E_DOMAIN\",
+              \"port\": 8084,
+              \"protocol\": \"HTTP\",
+              \"allowedRoutes\": {\"namespaces\": {\"from\": \"All\"}}
+            }
+          }]"
+        else
+          echo "Listener a2a-passthrough already exists, skipping"
+        fi
+
+        # create OpenShift Route for a2a-passthrough Listener (mcp)
+        kubectl apply -f - <<EOF
+          apiVersion: route.openshift.io/v1
+          kind: Route
+          metadata:
+            name: mcp-a2a-passthrough
+            namespace: gateway-system
+          spec:
+            host: mcp.a2a-passthrough.$E2E_DOMAIN
+            to:
+              kind: Service
+              name: mcp-gateway-${GATEWAY_CLASS_NAME}
+            port:
+              targetPort: a2a-passthrough
+            tls:
+              termination: edge
+              insecureEdgeTerminationPolicy: Redirect
+        EOF
+
+        # create OpenShift Route for a2a-passthrough Listener (a2a)
+        kubectl apply -f - <<EOF
+          apiVersion: route.openshift.io/v1
+          kind: Route
+          metadata:
+            name: a2a-a2a-passthrough
+            namespace: gateway-system
+          spec:
+            host: a2a.a2a-passthrough.$E2E_DOMAIN
+            to:
+              kind: Service
+              name: mcp-gateway-${GATEWAY_CLASS_NAME}
+            port:
+              targetPort: a2a-passthrough
+            tls:
+              termination: edge
+              insecureEdgeTerminationPolicy: Redirect
+        EOF
+
         # Add tool-discovery listener
         if ! kubectl get gateway mcp-gateway -n gateway-system -o jsonpath='{.spec.listeners[*].name}' | grep -qw "tool-discovery"; then
           kubectl patch gateway mcp-gateway -n gateway-system --type=json -p "[{
@@ -211,9 +266,16 @@ spec:
         for dep in $(oc get deployments -n mcp-test -o jsonpath='{.items[*].metadata.name}'); do
           oc patch deployment "$dep" -n mcp-test --type='json' -p='[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Always"}]'
         done
+
+        oc patch deployment a2a-test-server -n mcp-test --type=json -p='[
+            {"op": "remove", "path": "/spec/template/spec/securityContext/runAsUser"},
+            {"op": "remove", "path": "/spec/template/spec/securityContext/runAsGroup"}
+        ]'
+
         # wait for test MCP servers to get ready
         oc wait --for=condition=available --timeout=180s deployment/mcp-test-server1 -n mcp-test
         oc wait --for=condition=available --timeout=180s deployment/mcp-test-server2 -n mcp-test
+        oc wait --for=condition=available --timeout=180s deployment/a2a-test-server -n mcp-test
 
         # deploy redis
         oc apply -f config/mcp-gateway/overlays/mcp-system/redis-deployment.yaml -n "$MCP_GATEWAY_NAMESPACE"
