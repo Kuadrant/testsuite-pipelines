@@ -10,7 +10,9 @@ spec:
     - description: MCP conformance test suite version
       name: conformance-version
       type: string
-      default: "0.1.15"
+    - description: Path to the expected-failures baseline file, relative to the mcp-gateway repo checkout
+      name: expected-failures-file
+      type: string
   steps:
     - name: run-conformance-tests
       image: quay.io/kuadrant/testsuite-pipelines-tools:latest
@@ -53,36 +55,20 @@ spec:
 
         echo "Version used: ${CONFORMANCE_VERSION}"
 
-        SCENARIOS=(
-          server-initialize
-          tools-list
-          ping
-          tools-call-simple-text
-          tools-call-image
-          tools-call-audio
-          tools-call-embedded-resource
-          tools-call-mixed-content
-          tools-call-error
-          tools-call-with-progress
-        )
-
         CONFORMANCE_RESULTS="$(workspaces.shared-workspace.path)/conformance-results"
 
-        FAILED_SCENARIOS=()
-        for scenario in "${SCENARIOS[@]}"; do
-          echo "=== Running scenario: $scenario ==="
-          if ! npx @modelcontextprotocol/conformance@${CONFORMANCE_VERSION} server \
-            --url "${MCP_GATEWAY_URL}" \
-            --scenario "$scenario" \
-            --output-dir "$CONFORMANCE_RESULTS" \
-            --verbose; then
-            echo "FAILED: $scenario"
-            FAILED_SCENARIOS+=("$scenario")
-          else
-            echo "PASSED: $scenario"
-          fi
-          sleep 20
-        done
+        EXPECTED_FAILURES_FILE="$(params.expected-failures-file)"
+
+        echo "=== Running full MCP server conformance suite ==="
+        npx @modelcontextprotocol/conformance@${CONFORMANCE_VERSION} server \
+          --url "${MCP_GATEWAY_URL}" \
+          --suite all \
+          --spec-version 2025-11-25 \
+          --output-dir "$CONFORMANCE_RESULTS" \
+          --expected-failures "$EXPECTED_FAILURES_FILE" \
+          --verbose
+        CONFORMANCE_EXIT=$?
+        echo "Conformance tool exit code: ${CONFORMANCE_EXIT}"
 
         # Generate JUnit XML report from conformance check results
         JUNIT_REPORT="$(workspaces.shared-workspace.path)/junit-conformance-report.xml"
@@ -93,14 +79,37 @@ spec:
           exit 1
         fi
 
+        # Parse the expected-failures baseline into a JSON array of scenario names.
+        EXPECTED_JSON='[]'
+        if [ -f "$EXPECTED_FAILURES_FILE" ]; then
+          EXPECTED_JSON="$(sed -n '/^server:/,/^[^[:space:]#]/p' "$EXPECTED_FAILURES_FILE" \
+            | grep -E '^[[:space:]]*-[[:space:]]' \
+            | sed -E 's/^[[:space:]]*-[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]+$//' \
+            | jq -R . | jq -s .)"
+        fi
+        echo "Expected-failure baseline entries: $(echo "$EXPECTED_JSON" | jq -c .)"
+
         # Merge all checks.json files into a single JSON array
         echo "=== Generating JUnit XML report from checks.json files ==="
-        MERGED_CHECKS=$(find "$CONFORMANCE_RESULTS" -name 'checks.json' -print0 | xargs -0 jq -s 'add')
+        MERGED_CHECKS='[]'
+        while IFS= read -r -d '' f; do
+          dir="$(dirname "$f")"
+          rel="${dir#"$CONFORMANCE_RESULTS"/}"
+          scen="${rel#server-}"
+          scen="$(echo "$scen" | sed -E 's/-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{3}Z$//')"
+          enriched="$(jq --arg scen "$scen" '[.[] | . + {scenario: $scen}]' "$f")"
+          MERGED_CHECKS="$(jq -s 'add' <(printf '%s' "$MERGED_CHECKS") <(printf '%s' "$enriched"))"
+        done < <(find "$CONFORMANCE_RESULTS" -name 'checks.json' -print0)
 
         # Count totals for the testsuite element
         TOTAL=$(echo "$MERGED_CHECKS" | jq 'length')
-        FAILURES=$(echo "$MERGED_CHECKS" | jq '[.[] | select(.status == "FAILURE")] | length')
-        SKIPPED=$(echo "$MERGED_CHECKS" | jq '[.[] | select(.status == "SKIPPED")] | length')
+        FAILURES=$(echo "$MERGED_CHECKS" | jq --argjson exp "$EXPECTED_JSON" '
+          [.[] | .scenario as $s
+           | select(.status == "FAILURE" and ($exp | index($s) | not))] | length')
+        SKIPPED=$(echo "$MERGED_CHECKS" | jq --argjson exp "$EXPECTED_JSON" '
+          [.[] | .scenario as $s
+           | select(.status == "SKIPPED"
+               or (.status == "FAILURE" and ($exp | index($s)) != null))] | length')
 
         # Generate JUnit XML header
         {
@@ -109,14 +118,18 @@ spec:
           echo "  <testsuite name=\"mcp-conformance\" tests=\"${TOTAL}\" failures=\"${FAILURES}\" skipped=\"${SKIPPED}\" time=\"0\" timestamp=\"${TIMESTAMP}\">"
 
           # Generate a <testcase> element for each check result
-          echo "$MERGED_CHECKS" | jq -r '
+          echo "$MERGED_CHECKS" | jq -r --argjson exp "$EXPECTED_JSON" '
             def esc: gsub("&";"&amp;") | gsub("<";"&lt;") | gsub(">";"&gt;") | gsub("\"";"&quot;");
             .[] |
-            "    <testcase name=\"\(.id | esc)\" classname=\"tests.conformance\" time=\"0\">" +
-            (if .status == "FAILURE" then
+            .scenario as $s |
+            (($exp | index($s)) != null) as $expected |
+            "    <testcase name=\"\((.id // "unknown") | esc)\" classname=\"tests.conformance.\(($s // "unknown") | esc)\" time=\"0\">" +
+            (if .status == "FAILURE" and ($expected | not) then
               "\n      <failure message=\"\((.errorMessage // "check failed") | esc)\">" +
               (if .logs then (.logs | join("\n") | esc) else "" end) +
               "</failure>"
+            elif .status == "FAILURE" and $expected then
+              "\n      <skipped message=\"expected failure (baseline)\"/>"
             elif .status == "SKIPPED" then
               "\n      <skipped/>"
             else "" end) +
@@ -128,16 +141,15 @@ spec:
         } > "$JUNIT_REPORT"
         echo "JUnit XML report written to $JUNIT_REPORT"
 
-        if [ ${#FAILED_SCENARIOS[@]} -gt 0 ]; then
+        if [ "${CONFORMANCE_EXIT}" -ne 0 ]; then
           echo ""
-          echo "=== Summary: ${#FAILED_SCENARIOS[@]} scenario(s) failed ==="
-          for failed in "${FAILED_SCENARIOS[@]}"; do
-            echo "  - $failed"
-          done
-          exit 1
+          echo "=== Conformance suite reported unexpected results ==="
+          echo "The tool exits non-zero for a failure not in the baseline (regression)"
+          echo "or for a baselined entry that unexpectedly passed (stale baseline)."
+          exit "${CONFORMANCE_EXIT}"
         fi
 
         echo ""
-        echo "=== All scenarios passed ==="
+        echo "=== Conformance suite passed (expected failures ignored) ==="
   workspaces:
     - name: shared-workspace
