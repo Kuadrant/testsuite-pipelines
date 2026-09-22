@@ -31,6 +31,10 @@ spec:
     name: istio-provider
     type: string
     default: ossm3
+  - description: Image for the standalone Kuadrant extension (e.g. quay.io/kuadrant/internal-extensions:latest). Extensions are only supported on Kuadrant v1.6+ / RHCL v1.5+ (leave empty to skip deploying extensions)
+    name: extensions-image
+    type: string
+    default: "quay.io/kuadrant/internal-extensions:latest"
   - description: Additional flags for helm install command, example '--set=kuadrant.installPlanApproval=Manual --set=kuadrant.startingCSV=kuadrant-operator.v1.2.0'
     name: additional-helm-flags
     type: string
@@ -92,6 +96,8 @@ spec:
         value: "true"
       - name: additional-manifests-secret
         value: values-additional-manifests
+      - name: extensions-image
+        value: $(params.extensions-image)
     workspaces:
     - name: shared-workspace
       workspace: shared-workspace
