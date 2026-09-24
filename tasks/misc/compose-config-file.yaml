@@ -18,11 +18,7 @@ spec:
         secretName: rapidast-storage-access-key
       name: rapidast-storage-access-key
   steps:
-    - computeResources:
-        limits:
-          cpu: '100m'
-          memory: 64Mi
-      image: quay.io/kuadrant/testsuite-pipelines-tools:latest
+    - image: quay.io/kuadrant/testsuite-pipelines-tools:latest
       imagePullPolicy: Always
       name: compose-config-file
       volumeMounts:
