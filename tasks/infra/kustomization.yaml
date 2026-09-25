@@ -4,6 +4,7 @@ kind: Component
 resources:
   - cluster-secret-cleanup.yaml
   - delete-aro.yaml
+  - delete-eks.yaml
   - delete-ocp-aws.yaml
   - delete-osd.yaml
   - delete-rosa.yaml
@@ -15,10 +16,12 @@ resources:
   - pause-pipeline.yaml
   - prepare-for-rhcl-rc-install.yaml
   - provision-aro.yaml
+  - provision-eks.yaml
   - provision-ocp-aws.yaml
   - provision-osd-aws.yaml
   - provision-osd-gcp.yaml
   - provision-rosa.yaml
+  - setup-eks.yaml
   - rosa-login.yaml
   - upgrade-to-latest.yaml
   - wait-for-valid-certificates.yaml
