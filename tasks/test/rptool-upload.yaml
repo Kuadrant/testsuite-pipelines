@@ -27,10 +27,6 @@ spec:
         - /bin/bash
         - -cveo
         - pipefail
-      computeResources:
-        limits:
-          cpu: '250m'
-          memory: 256Mi
       env:
         - name: WORKSPACE
           value: $(workspaces.shared-workspace.path)

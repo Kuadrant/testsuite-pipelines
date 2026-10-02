@@ -8,11 +8,7 @@ spec:
     - name: kubeconfig-path
       type: string
   steps:
-    - computeResources:
-        limits:
-          cpu: '200m'
-          memory: 256Mi
-      env:
+    - env:
         - name: KUBECONFIG
           value: $(params.kubeconfig-path)
         - name: ADDITIONAL_AUTH_ENTRIES
