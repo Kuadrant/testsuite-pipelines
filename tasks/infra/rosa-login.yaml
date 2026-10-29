@@ -14,11 +14,7 @@ spec:
     - name: region
       type: string
   steps:
-    - computeResources:
-        limits:
-          cpu: '100m'
-          memory: 64Mi
-      env:
+    - env:
         - name: CLIENT_ID
           valueFrom:
             secretKeyRef:

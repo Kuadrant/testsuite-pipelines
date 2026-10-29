@@ -38,12 +38,9 @@ spec:
         - -cveo
         - pipefail
       computeResources:
-        limits:
-          cpu: '2'
-          memory: 2500Mi
         requests:
           cpu: '1'
-          memory: 2000Mi
+          memory: 1Gi
       env:
         - name: KUBECONFIG
           value: $(params.kubeconfig-path)
@@ -64,6 +61,7 @@ spec:
       image: $(params.testsuite-image)
       imagePullPolicy: Always
       name: run-tests
+      timeout: 2h
       volumeMounts:
         - mountPath: /var/kuadrant-settings
           name: $(params.settings-cm)

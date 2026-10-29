@@ -27,11 +27,7 @@ spec:
     - name: create-cmd-flags
       description: Flags for cluster creation command
   steps:
-    - computeResources:
-        limits:
-          cpu: '100m'
-          memory: 64Mi
-      env:
+    - env:
         - name: NAMESPACE
           valueFrom:
             fieldRef:

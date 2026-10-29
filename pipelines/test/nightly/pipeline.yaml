@@ -2,6 +2,8 @@ apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
   name: test-nightly
+  annotations:
+    pipelinesascode.tekton.dev/coschedule: workspaces
 spec:
   params:
     - default: 'quay.io/kuadrant/testsuite:unstable'
@@ -147,6 +149,7 @@ spec:
       taskRef:
         kind: Task
         name: run-tests
+      onError: continue
       workspaces:
         - name: shared-workspace
     - name: run-tests-authorino-standalone
@@ -172,6 +175,7 @@ spec:
       taskRef:
         kind: Task
         name: run-tests
+      onError: continue
       workspaces:
         - name: shared-workspace
     - name: run-tests-ui
@@ -197,6 +201,7 @@ spec:
       taskRef:
         kind: Task
         name: run-tests
+      onError: continue
       workspaces:
         - name: shared-workspace
     - name: run-tests-dnstls-gcp
@@ -222,6 +227,7 @@ spec:
       taskRef:
         kind: Task
         name: run-tests
+      onError: continue
       workspaces:
         - name: shared-workspace
     - name: run-tests-multicluster
@@ -248,6 +254,7 @@ spec:
       taskRef:
         kind: Task
         name: run-tests
+      onError: continue
       workspaces:
         - name: shared-workspace
     - name: run-tests-dnstls-azure
@@ -273,6 +280,7 @@ spec:
       taskRef:
         kind: Task
         name: run-tests
+      onError: continue
       workspaces:
         - name: shared-workspace
     - name: run-tests-disruptive
@@ -298,6 +306,7 @@ spec:
       taskRef:
         kind: Task
         name: run-tests
+      onError: continue
       workspaces:
         - name: shared-workspace
   finally:

@@ -8,11 +8,7 @@ spec:
     - name: kubeconfig-path
       type: string
   steps:
-    - computeResources:
-        limits:
-          cpu: '100m'
-          memory: 128Mi
-      env:
+    - env:
         - name: KUBECONFIG
           value: $(params.kubeconfig-path)
       image: quay.io/kuadrant/testsuite-pipelines-tools:latest

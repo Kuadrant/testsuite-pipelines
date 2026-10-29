@@ -17,10 +17,6 @@ spec:
       command:
         - /bin/sh
         - -cexv
-      computeResources:
-        limits:
-          cpu: '250m'
-          memory: 128Mi
       image: quay.io/kuadrant/testsuite-pipelines-tools:latest
       imagePullPolicy: Always
       name: check-image-existence

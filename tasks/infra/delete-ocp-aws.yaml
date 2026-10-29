@@ -12,11 +12,7 @@ spec:
       configMap:
         name: gitlab-ca
   steps:
-    - computeResources:
-        limits:
-          cpu: '150m'
-          memory: 400Mi
-      env:
+    - env:
         - name: NAMESPACE
           valueFrom:
             fieldRef:
