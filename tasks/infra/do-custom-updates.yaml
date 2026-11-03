@@ -33,5 +33,24 @@ spec:
                 config.yaml: |
                     enableUserWorkload: true
         EOF
+
+        # Copy the full ingress certificate chain in 'custom-cert' Secret, required for egress tests.
+        source_secret=$(kubectl get ingresscontroller default -n openshift-ingress-operator -o jsonpath='{.spec.defaultCertificate.name}')
+        source_secret=${source_secret:-router-certs-default}
+
+        if [[ "$source_secret" != custom-cert ]]; then
+          kubectl -n openshift-ingress get secret "$source_secret" -o json \
+            | jq '{
+                apiVersion: "v1",
+                kind: "Secret",
+                metadata: {
+                  name: "custom-cert",
+                  namespace: "openshift-ingress"
+                },
+                type: "kubernetes.io/tls",
+                data: {"tls.crt": .data["tls.crt"], "tls.key": .data["tls.key"]}
+              }' \
+            | kubectl apply -f -
+        fi
   workspaces:
     - name: shared-workspace
