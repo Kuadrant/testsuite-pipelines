@@ -99,6 +99,8 @@ spec:
           metadata:
             name: protocol-2026
             namespace: gateway-system
+            annotations:
+              haproxy.router.openshift.io/timeout: 5m
           spec:
             host: mcp.protocol-2026.$E2E_DOMAIN
             to:
