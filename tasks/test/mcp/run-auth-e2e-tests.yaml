@@ -403,7 +403,6 @@ spec:
           go test -count=1 -v -tags=integration,mcp_auth_e2e -timeout="$E2E_TIMEOUT" "$AUTH_TEST_DIR" \
             -ginkgo.v -ginkgo.timeout="$E2E_TIMEOUT" -ginkgo.fail-on-empty \
             -ginkgo.junit-report="$(workspaces.shared-workspace.path)/junit-e2e-auth-report.xml" \
-            -ginkgo.skip='rejects an unauthorized tool call' \
             -ginkgo.focus="MCP Gateway AuthPolicy integration" || GINKGO_RC=$?
           REPORT="$(workspaces.shared-workspace.path)/junit-e2e-auth-report.xml"
           # Clean up Ginkgo JUnit XML for ReportPortal:
