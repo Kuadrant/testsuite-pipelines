@@ -11,6 +11,10 @@ spec:
     - env:
         - name: INDEX_IMAGE
           value: $(params.index-image)
+      when:
+        - input: "$(params.index-image)"
+          operator: notin
+          values: [""]
       script: |
         #!/bin/bash
         set -euo pipefail
