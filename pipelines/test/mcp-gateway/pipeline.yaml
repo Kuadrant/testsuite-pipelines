@@ -159,6 +159,9 @@ spec:
       - input: "$(params.use-nightly-kuadrant)-$(params.install-kuadrant)"
         operator: in
         values: ["true-true"]
+      - input: "$(tasks.nightly-image-date.results.nightly-image)"
+        operator: notin
+        values: ['']
     params:
       - name: index-image
         value: $(tasks.nightly-image-date.results.nightly-image)
