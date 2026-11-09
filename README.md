@@ -129,10 +129,16 @@ kubectl create secret generic registry-redhat-io-pull-secret --from-file=.docker
 - The EKS pipeline runs the testsuite and uploads results, so it also requires the resources from the **test/** section above.
 
 #### Resources required for MCP Gateway pipeline
-- Opaque Secret containing a GitHub Personal Access Token for MCP e2e tests. The secret name must be specified via the `github-pat-secret` input parameter. E.g.
+- Opaque Secret containing GitHub App credentials for the external GitHub MCP e2e test. Create it in the pipeline namespace with keys `client-id`, `installation-id`, and `private-key.pem`. Set the `github-app-secret` pipeline parameter to its name (default: `mcp-github-app`). E.g.
 ```shell
-kubectl create secret generic my-gh-pat --from-literal=token="ghp_xxxxxxxxxxxx" -n ${PIPELINE_NAMESPACE}
+kubectl create secret generic mcp-github-app \
+  --from-literal=client-id="Iv1.REPLACE_ME" \
+  --from-literal=installation-id="12345678" \
+  --from-file=private-key.pem=/path/to/github-app.pem \
+  -n "${PIPELINE_NAMESPACE}"
 ```
+No specific permissions are required to be configured for the App, the test that uses is does not call any GitHub MCP Server tool, it just lists the available tools.
+
 - The MCP Gateway pipeline also provisions OSD clusters and optionally deploys Kuadrant, so it may require resources from the **infra/** and **deploy/** sections above depending on configuration.
 
 #### Resources required for rapiDAST pipeline

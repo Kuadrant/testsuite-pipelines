@@ -137,10 +137,10 @@ spec:
     name: expected-failures-file
     type: string
     default: "tests/conformance/baseline-202511.yaml"
-  - description: Secret name containing GitHub PAT for MCP e2e tests
-    name: github-pat-secret
+  - description: Secret name containing GitHub App credentials for MCP e2e tests
+    name: github-app-secret
     type: string
-    default: trepel-gh-pat
+    default: mcp-github-app
   - description: Secret name containing additional Helm values manifest (additionalManifests.yaml)
     name: additional-manifests-secret
     type: string
@@ -372,8 +372,8 @@ spec:
         value: $(params.istio-provider)
       - name: run-tests
         value: $(params.run-e2e-tests)
-      - name: github-pat-secret
-        value: $(params.github-pat-secret)
+      - name: github-app-secret
+        value: $(params.github-app-secret)
     workspaces:
     - name: shared-workspace
       workspace: shared-workspace
