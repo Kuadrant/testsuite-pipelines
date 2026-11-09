@@ -16,8 +16,8 @@ spec:
     - description: Run the actual e2e tests (true/false)
       name: run-tests
       type: string
-    - description: Secret name containing GitHub PAT for MCP tests
-      name: github-pat-secret
+    - description: Secret name containing GitHub App credentials (client-id, installation-id, private-key.pem)
+      name: github-app-secret
       type: string
   steps:
     - name: run-e2e-tests
@@ -26,13 +26,23 @@ spec:
       env:
       - name: KUBECONFIG
         value: $(params.kubeconfig-path)
-      - name: GITHUB_MCP_PAT
+      - name: GITHUB_APP_CLIENT_ID
         valueFrom:
           secretKeyRef:
-            name: $(params.github-pat-secret)
-            key: token
+            name: $(params.github-app-secret)
+            key: client-id
+      - name: GITHUB_APP_INSTALLATION_ID
+        valueFrom:
+          secretKeyRef:
+            name: $(params.github-app-secret)
+            key: installation-id
+      volumeMounts:
+        - name: github-app-key
+          mountPath: /var/run/github-app
+          readOnly: true
       script: |
         #!/usr/bin/env bash
+        set +x
         set -euo pipefail
 
         # Populate env vars required for e2e tests
@@ -472,6 +482,37 @@ spec:
         kubectl wait --for=condition=available --timeout=120s deployment/mcp-tls-server -n mcp-test
 
         if [ "$(params.run-tests)" = "true" ]; then
+          # based on https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app#example-using-bash-to-generate-a-jwt
+          generate_github_token() (
+            set -euo pipefail
+            umask 077
+
+            token_dir=$(mktemp -d)
+            trap 'rm -rf -- "$token_dir"' EXIT
+            base64url() {
+              openssl base64 -A | tr '+/' '-_' | tr -d '='
+            }
+            now=$(date +%s)
+            header=$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | base64url)
+            payload=$(jq -cn --arg iss "$GITHUB_APP_CLIENT_ID" \
+              --argjson iat "$((now - 60))" --argjson exp "$((now + 540))" \
+              '{iss: $iss, iat: $iat, exp: $exp}' | base64url)
+            unsigned="${header}.${payload}"
+            signature=$(printf '%s' "$unsigned" | \
+              openssl dgst -sha256 -sign /var/run/github-app/private-key.pem | base64url)
+            printf 'Authorization: Bearer %s.%s\n' "$unsigned" "$signature" > "$token_dir/auth-header"
+
+            curl --silent --show-error --fail --connect-timeout 15 --max-time 60 \
+              --request POST \
+              --url "https://api.github.com/app/installations/${GITHUB_APP_INSTALLATION_ID}/access_tokens" \
+              --header "@$token_dir/auth-header" \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2026-03-10' \
+              --output "$token_dir/response.json"
+            jq -er '.token | select(type == "string" and length > 0)' "$token_dir/response.json"
+          )
+          export GITHUB_MCP_PAT=$(generate_github_token)
+
           GINKGO_RC=0
           ./bin/ginkgo -v --tags=e2e --timeout="$E2E_TIMEOUT" --procs="$E2E_PROCS" --skip=NemoGuardrails --junit-report="junit-e2e-report.xml" --output-dir="$(workspaces.shared-workspace.path)" ./tests/e2e || GINKGO_RC=$?
           REPORT="$(workspaces.shared-workspace.path)/junit-e2e-report.xml"
@@ -518,6 +559,14 @@ spec:
         else
           echo "Skipping e2e test execution (run-tests=false), but setup completed successfully"
         fi
+
+  volumes:
+    - name: github-app-key
+      secret:
+        secretName: $(params.github-app-secret)
+        items:
+          - key: private-key.pem
+            path: private-key.pem
 
   workspaces:
     - name: shared-workspace
