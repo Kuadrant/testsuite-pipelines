@@ -1,0 +1,64 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: setup-cluster
+spec:
+  description: 'Clones cluster-setup-tools from gitolite and runs cluster-setup/setup-cluster.sh against the target cluster, then waits for the cluster operators to reconcile'
+  params:
+    - name: kubeconfig-path
+      type: string
+      description: Path to the target cluster kubeconfig in the shared workspace
+    - name: stable-period
+      type: string
+      description: How long cluster operators must stay stable before the task returns
+      default: "2m"
+    - name: wait-timeout
+      type: string
+      description: Maximum time to wait for the cluster operators to reconcile
+      default: "30m"
+  workspaces:
+    - name: shared-workspace
+      description: "Shared workspace holding the target cluster kubeconfig"
+  steps:
+    - name: setup-cluster
+      computeResources:
+        limits:
+          cpu: '200m'
+          memory: '500Mi'
+        requests:
+          cpu: '100m'
+          memory: '100Mi'
+      env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: TARGET_KUBECONFIG
+          value: $(params.kubeconfig-path)
+      image: quay.io/kuadrant/testsuite-pipelines-tools:latest
+      imagePullPolicy: Always
+      script: |
+        set -euo pipefail
+
+        GITOLITE_HOST=$(kubectl get secret gitolite-ssh -n "${NAMESPACE}" \
+          -o jsonpath='{.metadata.annotations.tekton\.dev/git-0}')
+        if [ -z "${GITOLITE_HOST}" ]; then
+          echo "ERROR: Failed to read repository host from gitolite-ssh secret annotation"
+          exit 1
+        fi
+
+        git config --global user.email ci-robot-account@redhat.com
+        git config --global user.name "CI Robot"
+        export GIT_SSH_COMMAND="ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no"
+        git clone "ssh://git@${GITOLITE_HOST}/cluster-setup-tools"
+
+        # Everything from here on targets the cluster being set up.
+        export KUBECONFIG="${TARGET_KUBECONFIG}"
+        cd cluster-setup-tools/cluster-setup
+        ./setup-cluster.sh
+
+        echo "Waiting for cluster operators to reconcile..."
+        oc adm wait-for-stable-cluster \
+          --minimum-stable-period=$(params.stable-period) \
+          --timeout=$(params.wait-timeout) \
+          --insecure-skip-tls-verify

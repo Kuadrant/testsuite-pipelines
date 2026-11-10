@@ -6,22 +6,32 @@ spec:
   params:
     # Cluster related parameters
     - name: cluster-name
+      description: Name of the cluster to provision
       type: string
     - name: installer-version
       type: string
       default: "stable"
+      description: "stable-4.22, stable-5.0, see https://mirror.openshift.com/pub/openshift-v4/amd64/clients/ocp/"
     - name: region
       type: string
-      default: "us-east-1"
+      default: "eu-west-1"
+      description: "do not change if you dont know what you doing"
     - name: master-size
       type: string
       default: "m6g.xlarge"
+      description: "m6g.xlarge for arm64; m6a.xlarge for amd64"
     - name: worker-size
       type: string
-      default: "m6g.large"
+      default: "m6g.xlarge"
+      description: "m6g.xlarge for arm64; m6a.xlarge for amd64"
     - name: installer-arch
       type: string
       default: "arm64"
+      description: "arm64 or amd64"
+    - default: openshift-pipelines-credentials
+      description: Secret name with cluster admin credentials (static admin created by setup-cluster)
+      name: cluster-credentials
+      type: string
     # Kuadrant/RHCL installation related parameters
     - default: quay.io/kuadrant/kuadrant-operator-catalog:v1.3.1
       description: Kuadrant/RHCL index image, leave empty to install current RHCL GA
@@ -110,7 +120,20 @@ spec:
     - name: shared-workspace
       description: "Workspace to store cluster state files"
   tasks:
+    - name: check-image-existence
+      when:
+        - input: "$(params.index-image)"
+          operator: notin
+          values: ['']
+      params:
+        - name: index-image
+          value: $(params.index-image)
+      taskRef:
+        kind: Task
+        name: check-image-existence
     - name: provision-ocp-aws
+      runAfter:
+        - check-image-existence
       params:
         - name: cluster-name
           value: $(params.cluster-name)
@@ -130,6 +153,34 @@ spec:
       taskRef:
         kind: Task
         name: provision-ocp-aws
+    - name: setup-cluster
+      params:
+        - name: kubeconfig-path
+          value: $(tasks.provision-ocp-aws.results.kubeconfig-path)
+      runAfter:
+        - provision-ocp-aws
+      taskRef:
+        kind: Task
+        name: setup-cluster
+      workspaces:
+        - name: shared-workspace
+          workspace: shared-workspace
+    - name: kubectl-login
+      params:
+        - name: testsuite-image
+          value: $(params.testsuite-image)
+        - name: kube-api
+          value: $(tasks.provision-ocp-aws.results.kube-api)
+        - name: cluster-credentials
+          value: $(params.cluster-credentials)
+      runAfter:
+        - setup-cluster
+      taskRef:
+        kind: Task
+        name: kubectl-login
+      workspaces:
+        - name: shared-workspace
+          workspace: shared-workspace
     - name: helm-deploy
       retries: 3
       params:
@@ -144,7 +195,7 @@ spec:
         - name: operator-name
           value: $(params.operator-name)
         - name: kubeconfig-path
-          value: $(tasks.provision-ocp-aws.results.kubeconfig-path)
+          value: $(tasks.kubectl-login.results.kubeconfig-path)
         - name: additional-helm-flags
           value: $(params.additional-helm-flags)
         - name: additional-helm-tools-flags
@@ -158,22 +209,10 @@ spec:
         - name: extensions-image
           value: $(params.extensions-image)
       runAfter:
-        - provision-ocp-aws
+        - kubectl-login
       taskRef:
         kind: Task
         name: helm-deploy
-      workspaces:
-        - name: shared-workspace
-          workspace: shared-workspace
-    - name: do-custom-updates
-      params:
-        - name: kubeconfig-path
-          value: $(tasks.provision-ocp-aws.results.kubeconfig-path)
-      runAfter:
-        - helm-deploy
-      taskRef:
-        kind: Task
-        name: do-custom-updates
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
@@ -184,9 +223,9 @@ spec:
         - name: settings-cm
           value: $(params.settings-cm)
         - name: kubeconfig-path
-          value: $(tasks.provision-ocp-aws.results.kubeconfig-path)
+          value: $(tasks.kubectl-login.results.kubeconfig-path)
       runAfter:
-        - do-custom-updates
+        - helm-deploy
       taskRef:
         kind: Task
         name: collect-info
@@ -209,9 +248,9 @@ spec:
         - name: additional-env
           value: $(params.additional-env)
         - name: kubeconfig-path
-          value: $(tasks.provision-ocp-aws.results.kubeconfig-path)
+          value: $(tasks.kubectl-login.results.kubeconfig-path)
         - name: cluster-credentials
-          value: $(tasks.provision-ocp-aws.results.credentials-secret)
+          value: $(params.cluster-credentials)
       runAfter:
         - collect-info
       taskRef:
@@ -244,13 +283,16 @@ spec:
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
+  finally:
     - name: delete-ocp-aws
       when:
         - input: $(params.cleanup)
           operator: in
           values: ["true"]
-      runAfter:
-        - rptool-upload
+        # Skip cleanup if the cluster was never provisioned (e.g. image check failed)
+        - input: $(tasks.provision-ocp-aws.status)
+          operator: notin
+          values: ["None"]
       params:
         - name: cluster-name
           value: $(params.cluster-name)

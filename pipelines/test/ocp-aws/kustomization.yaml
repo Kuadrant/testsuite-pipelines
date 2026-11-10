@@ -9,6 +9,7 @@ labels:
 components:
   - ../../../tasks/deploy/
   - ../../../tasks/infra/
+  - ../../../tasks/login/
   - ../../../tasks/test/
 
 resources:
