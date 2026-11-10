@@ -184,10 +184,35 @@ spec:
     workspaces:
     - name: shared-workspace
       workspace: shared-workspace
+  - name: prepare-for-rhcl-rc-install
+    when:
+      - input: "$(params.kuadrant-index-image)"
+        operator: notin
+        values: [""]
+      - input: "$(params.kuadrant-operator-name)"
+        operator: in
+        values: ["rhcl-operator"]
+      - input: "$(params.install-kuadrant)"
+        operator: in
+        values: ["true"]
+      - input: "$(params.use-nightly-kuadrant)"
+        operator: in
+        values: ["false"]
+    params:
+      - name: kubeconfig-path
+        value: $(tasks.kubectl-login.results.kubeconfig-path)
+    runAfter:
+      - kubectl-login
+    taskRef:
+      kind: Task
+      name: prepare-for-rhcl-rc-install
+    workspaces:
+      - name: shared-workspace
+        workspace: shared-workspace
   - name: helm-deploy
     retries: 3
     runAfter:
-    - kubectl-login
+    - prepare-for-rhcl-rc-install
     when:
       - input: "$(params.install-tools)-$(params.install-kuadrant)"
         operator: in
@@ -229,7 +254,7 @@ spec:
   - name: helm-deploy-nightly
     retries: 3
     runAfter:
-    - kubectl-login
+    - prepare-for-rhcl-rc-install
     - check-image-existence
     when:
       - input: "$(params.use-nightly-kuadrant)-$(params.install-kuadrant)"
