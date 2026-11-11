@@ -19,7 +19,7 @@ spec:
     name: chart-version
     type: string
     default: ""
-  - description: Kuadrant image channel. Can be 'preview' for nightlies and 'stable' for releases
+  - description: Operator channel ('preview' for nightlies, 'stable' for upstream releases, stable-1.4 or stable-1.5 for newer RHCL releases)
     name: channel
     type: string
     default: stable
