@@ -1,0 +1,18 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: infra-delete-ocp-aws
+spec:
+  description: Delete a leftover (uncleaned) AWS OCP cluster provisioned via osia
+  params:
+    - description: Name of the cluster that is to be deleted
+      name: cluster-name
+      type: string
+  tasks:
+    - name: delete-ocp-aws
+      params:
+        - name: cluster-name
+          value: $(params.cluster-name)
+      taskRef:
+        kind: Task
+        name: delete-ocp-aws

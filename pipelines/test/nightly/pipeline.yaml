@@ -8,24 +8,67 @@ spec:
       description: Testsuite image to run tests on
       name: testsuite-image
       type: string
-    - default: 'quay.io/kuadrant/testsuite-ui:unstable'
-      description: Testsuite UI image to run UI tests on
-      name: testsuite-ui-image
+    # Cluster related parameters
+    - name: cluster-name
+      description: Name of the first cluster to provision
       type: string
-    - description: API URL of the Openshift cluster
-      name: kube-api
+      default: "nightly-1"
+    - name: cluster-name-second
+      description: Name of the second cluster to provision
       type: string
-    - description: Secret name with cluster credentials
+      default: "nightly-2"
+    - name: cluster-name-third
+      description: Name of the third cluster to provision
+      type: string
+      default: "nightly-3"
+    - name: installer-version
+      type: string
+      default: "stable"
+      description: "stable-4.22, stable-5.0, see https://mirror.openshift.com/pub/openshift-v4/amd64/clients/ocp/"
+    - name: region
+      type: string
+      default: "eu-west-1"
+      description: "do not change if you dont know what you doing"
+    - name: master-size
+      type: string
+      default: "m6g.xlarge"
+      description: "m6g.xlarge for arm64; m6a.xlarge for amd64"
+    - name: worker-size
+      type: string
+      default: "m6g.xlarge"
+      description: "m6g.xlarge for arm64; m6a.xlarge for amd64"
+    - name: installer-arch
+      type: string
+      default: "arm64"
+      description: "arm64 or amd64"
+    - default: openshift-pipelines-credentials
+      description: Secret name with cluster admin credentials (static admin created by setup-cluster)
       name: cluster-credentials
       type: string
-      default: openshift-pipelines-credentials
+    # Kuadrant/RHCL installation related parameters
+    - default: ossm3
+      description: Istio provider (ossm3, ocp); 'ossm3' (recommended for all Openshift versions), 'ocp' for installing Istio managed by Gateway API on OCP v4.19+ (not recommended - mTLS is not supported).
+      name: istio-provider
+      type: string
+    - default: kuadrant-operator
+      description: Operator name (kuadrant-operator, rhcl-operator)
+      name: operator-name
+      type: string
+    - default: "quay.io/kuadrant/internal-extensions:latest"
+      description: Image for the standalone Kuadrant extension (e.g. quay.io/kuadrant/internal-extensions:latest). Extensions are only supported on Kuadrant v1.6+ / RHCL v1.5+ (leave empty to skip deploying extensions)
+      name: extensions-image
+      type: string
+    - default: ""
+      description: Additional flags for helm install command, example '--set=kuadrant.installPlanApproval=Manual --set=kuadrant.startingCSV=kuadrant-operator.v1.2.0'
+      name: additional-helm-flags
+      type: string
+    - default: ""
+      description: Additional flags for tools helm, example '--set=tools.keycloak.keycloakProvider=deployment --set=tools.valkey.enable=false'"
+      name: additional-helm-tools-flags
+      type: string
     - default: kuadrant
       description: Name of the Openshift project
       name: project
-      type: string
-    - default: all
-      description: Makefile target for tests (doesn't affect nightly pipeline, kept for compatibility)
-      name: make-target
       type: string
     - default: ""
       description: Extra pytest flags. Non-UI nightly jobs always also pass --collect-resources-on-failure.
@@ -38,12 +81,6 @@ spec:
     - default: ""
       description: Additional env for testsuite container separated with spaces (e.g. KUADRANT_CONTROL_PLANE__provider_secret=gcp-credentials KUADRANT_KEYCLOAK__url="https://my-sso.net")
       name: additional-env
-      type: string
-    - description: API URL of the second Openshift cluster for multi-cluster tests
-      name: kube-api-second
-      type: string
-    - description: API URL of the third Openshift cluster
-      name: kube-api-third
       type: string
     - default: nightly
       description: Prefix of the launch name saved in report portal (nightly, username, manual, etc.). In case of release candidate testing use kuadrant-v<version>, rhcl-v<version>, or authorino-v<version>
@@ -65,44 +102,267 @@ spec:
       description: rptool image for uploading results to Report Portal
       name: rptool-image
       type: string
+    # Cleanup
+    - default: true
+      description: If set to 'true' the provisioned clusters are deleted at the end
+      name: cleanup
+      type: string
   tasks:
-    - name: kubectl-login
+    # Resolve today's nightly catalog image and make sure it exists before
+    # provisioning anything; if it is missing the check fails and the whole
+    # run is skipped (no clusters are created).
+    - name: nightly-image-date
+      taskRef:
+        kind: Task
+        name: nightly-image-date
+    - name: check-image-existence
+      params:
+        - name: index-image
+          value: $(tasks.nightly-image-date.results.nightly-image)
+      runAfter:
+        - nightly-image-date
+      taskRef:
+        kind: Task
+        name: check-image-existence
+    # First cluster
+    - name: provision-ocp-aws-first
+      params:
+        - name: cluster-name
+          value: $(params.cluster-name)
+        - name: installer-version
+          value: $(params.installer-version)
+        - name: region
+          value: $(params.region)
+        - name: master-size
+          value: $(params.master-size)
+        - name: worker-size
+          value: $(params.worker-size)
+        - name: installer-arch
+          value: $(params.installer-arch)
+      runAfter:
+        - check-image-existence
+      taskRef:
+        kind: Task
+        name: provision-ocp-aws
+      workspaces:
+        - name: shared-workspace
+    - name: setup-cluster-first
+      params:
+        - name: kubeconfig-path
+          value: $(tasks.provision-ocp-aws-first.results.kubeconfig-path)
+      runAfter:
+        - provision-ocp-aws-first
+      taskRef:
+        kind: Task
+        name: setup-cluster
+      workspaces:
+        - name: shared-workspace
+    - name: kubectl-login-first
       params:
         - name: testsuite-image
           value: $(params.testsuite-image)
         - name: kube-api
-          value: $(params.kube-api)
+          value: $(tasks.provision-ocp-aws-first.results.kube-api)
         - name: cluster-credentials
           value: $(params.cluster-credentials)
+      runAfter:
+        - setup-cluster-first
       taskRef:
         kind: Task
         name: kubectl-login
       workspaces:
         - name: shared-workspace
-    - name: kubectl-login-second-cluster
+    # Second cluster
+    - name: provision-ocp-aws-second
+      params:
+        - name: cluster-name
+          value: $(params.cluster-name-second)
+        - name: installer-version
+          value: $(params.installer-version)
+        - name: region
+          value: $(params.region)
+        - name: master-size
+          value: $(params.master-size)
+        - name: worker-size
+          value: $(params.worker-size)
+        - name: installer-arch
+          value: $(params.installer-arch)
+      runAfter:
+        - check-image-existence
+      taskRef:
+        kind: Task
+        name: provision-ocp-aws
+      workspaces:
+        - name: shared-workspace
+    - name: setup-cluster-second
+      params:
+        - name: kubeconfig-path
+          value: $(tasks.provision-ocp-aws-second.results.kubeconfig-path)
+      runAfter:
+        - provision-ocp-aws-second
+      taskRef:
+        kind: Task
+        name: setup-cluster
+      workspaces:
+        - name: shared-workspace
+    - name: kubectl-login-second
       params:
         - name: testsuite-image
           value: $(params.testsuite-image)
         - name: kube-api
-          value: $(params.kube-api-second)
+          value: $(tasks.provision-ocp-aws-second.results.kube-api)
         - name: cluster-credentials
           value: $(params.cluster-credentials)
+      runAfter:
+        - setup-cluster-second
       taskRef:
         kind: Task
         name: kubectl-login
       workspaces:
         - name: shared-workspace
-    - name: kubectl-login-third-cluster
+    # Third cluster
+    - name: provision-ocp-aws-third
+      params:
+        - name: cluster-name
+          value: $(params.cluster-name-third)
+        - name: installer-version
+          value: $(params.installer-version)
+        - name: region
+          value: $(params.region)
+        - name: master-size
+          value: $(params.master-size)
+        - name: worker-size
+          value: $(params.worker-size)
+        - name: installer-arch
+          value: $(params.installer-arch)
+      runAfter:
+        - check-image-existence
+      taskRef:
+        kind: Task
+        name: provision-ocp-aws
+      workspaces:
+        - name: shared-workspace
+    - name: setup-cluster-third
+      params:
+        - name: kubeconfig-path
+          value: $(tasks.provision-ocp-aws-third.results.kubeconfig-path)
+      runAfter:
+        - provision-ocp-aws-third
+      taskRef:
+        kind: Task
+        name: setup-cluster
+      workspaces:
+        - name: shared-workspace
+    - name: kubectl-login-third
       params:
         - name: testsuite-image
           value: $(params.testsuite-image)
         - name: kube-api
-          value: $(params.kube-api-third)
+          value: $(tasks.provision-ocp-aws-third.results.kube-api)
         - name: cluster-credentials
           value: $(params.cluster-credentials)
+      runAfter:
+        - setup-cluster-third
       taskRef:
         kind: Task
         name: kubectl-login
+      workspaces:
+        - name: shared-workspace
+    # Install Kuadrant/RHCL nightly on each cluster
+    - name: helm-deploy-first
+      retries: 3
+      params:
+        - name: index-image
+          value: $(tasks.nightly-image-date.results.nightly-image)
+        - name: channel
+          value: preview
+        - name: istio-provider
+          value: $(params.istio-provider)
+        - name: operator-name
+          value: $(params.operator-name)
+        - name: kubeconfig-path
+          value: $(tasks.kubectl-login-first.results.kubeconfig-path)
+        - name: additional-helm-flags
+          value: $(params.additional-helm-flags)
+        - name: additional-helm-tools-flags
+          value: $(params.additional-helm-tools-flags)
+        - name: install-tools
+          value: "true"
+        - name: install-kuadrant
+          value: "true"
+        - name: additional-manifests-secret
+          value: values-additional-manifests
+        - name: extensions-image
+          value: $(params.extensions-image)
+      runAfter:
+        - kubectl-login-first
+      taskRef:
+        kind: Task
+        name: helm-deploy
+      workspaces:
+        - name: shared-workspace
+    - name: helm-deploy-second
+      retries: 3
+      params:
+        - name: index-image
+          value: $(tasks.nightly-image-date.results.nightly-image)
+        - name: channel
+          value: preview
+        - name: istio-provider
+          value: $(params.istio-provider)
+        - name: operator-name
+          value: $(params.operator-name)
+        - name: kubeconfig-path
+          value: $(tasks.kubectl-login-second.results.kubeconfig-path)
+        - name: additional-helm-flags
+          value: $(params.additional-helm-flags)
+        - name: additional-helm-tools-flags
+          value: $(params.additional-helm-tools-flags)
+        - name: install-tools
+          value: "true"
+        - name: install-kuadrant
+          value: "true"
+        - name: additional-manifests-secret
+          value: values-additional-manifests
+        - name: extensions-image
+          value: $(params.extensions-image)
+      runAfter:
+        - kubectl-login-second
+      taskRef:
+        kind: Task
+        name: helm-deploy
+      workspaces:
+        - name: shared-workspace
+    - name: helm-deploy-third
+      retries: 3
+      params:
+        - name: index-image
+          value: $(tasks.nightly-image-date.results.nightly-image)
+        - name: channel
+          value: preview
+        - name: istio-provider
+          value: $(params.istio-provider)
+        - name: operator-name
+          value: $(params.operator-name)
+        - name: kubeconfig-path
+          value: $(tasks.kubectl-login-third.results.kubeconfig-path)
+        - name: additional-helm-flags
+          value: $(params.additional-helm-flags)
+        - name: additional-helm-tools-flags
+          value: $(params.additional-helm-tools-flags)
+        - name: install-tools
+          value: "true"
+        - name: install-kuadrant
+          value: "true"
+        - name: additional-manifests-secret
+          value: values-additional-manifests
+        - name: extensions-image
+          value: $(params.extensions-image)
+      runAfter:
+        - kubectl-login-third
+      taskRef:
+        kind: Task
+        name: helm-deploy
       workspaces:
         - name: shared-workspace
     - name: collect-info
@@ -112,13 +372,13 @@ spec:
         - name: settings-cm
           value: $(params.settings-cm)
         - name: kubeconfig-path
-          value: $(tasks.kubectl-login.results.kubeconfig-path)
+          value: $(tasks.kubectl-login-first.results.kubeconfig-path)
         - name: additional-env
-          value: 'KUADRANT_CONTROL_PLANE__cluster2__kubeconfig_path=$(tasks.kubectl-login-second-cluster.results.kubeconfig-path) KUADRANT_CONTROL_PLANE__cluster3__kubeconfig_path=$(tasks.kubectl-login-third-cluster.results.kubeconfig-path)'
+          value: 'KUADRANT_CONTROL_PLANE__cluster2__kubeconfig_path=$(tasks.kubectl-login-second.results.kubeconfig-path) KUADRANT_CONTROL_PLANE__cluster3__kubeconfig_path=$(tasks.kubectl-login-third.results.kubeconfig-path)'
       runAfter:
-        - kubectl-login
-        - kubectl-login-second-cluster
-        - kubectl-login-third-cluster
+        - helm-deploy-first
+        - helm-deploy-second
+        - helm-deploy-third
       taskRef:
         kind: Task
         name: collect-info
@@ -139,7 +399,7 @@ spec:
         - name: additional-env
           value: $(params.additional-env)
         - name: kubeconfig-path
-          value: $(tasks.kubectl-login.results.kubeconfig-path)
+          value: $(tasks.kubectl-login-first.results.kubeconfig-path)
         - name: cluster-credentials
           value: $(params.cluster-credentials)
       runAfter:
@@ -164,32 +424,7 @@ spec:
         - name: additional-env
           value: $(params.additional-env)
         - name: kubeconfig-path
-          value: $(tasks.kubectl-login-second-cluster.results.kubeconfig-path)
-        - name: cluster-credentials
-          value: $(params.cluster-credentials)
-      runAfter:
-        - collect-info
-      taskRef:
-        kind: Task
-        name: run-tests
-      workspaces:
-        - name: shared-workspace
-    - name: run-tests-ui
-      params:
-        - name: testsuite-image
-          value: $(params.testsuite-ui-image)
-        - name: project
-          value: $(params.project)
-        - name: make-target
-          value: ui
-        - name: pytest-flags
-          value: $(params.pytest-flags)
-        - name: settings-cm
-          value: $(params.settings-cm)
-        - name: additional-env
-          value: $(params.additional-env)
-        - name: kubeconfig-path
-          value: $(tasks.kubectl-login-third-cluster.results.kubeconfig-path)
+          value: $(tasks.kubectl-login-second.results.kubeconfig-path)
         - name: cluster-credentials
           value: $(params.cluster-credentials)
       runAfter:
@@ -214,7 +449,7 @@ spec:
         - name: additional-env
           value: "$(params.additional-env) KUADRANT_CONTROL_PLANE__provider_secret=gcp-credentials"
         - name: kubeconfig-path
-          value: $(tasks.kubectl-login.results.kubeconfig-path)
+          value: $(tasks.kubectl-login-first.results.kubeconfig-path)
         - name: cluster-credentials
           value: $(params.cluster-credentials)
       runAfter:
@@ -235,16 +470,15 @@ spec:
         - name: make-target
           value: multicluster
         - name: pytest-flags
-          value: "$(params.pytest-flags) --collect-resources-on-failure"
+          value: "$(params.pytest-flags) --collect-resources-on-failure --reruns=0"
         - name: additional-env
-          value: '$(params.additional-env) KUADRANT_CONTROL_PLANE__cluster__kubeconfig_path=$(tasks.kubectl-login-second-cluster.results.kubeconfig-path) KUADRANT_CONTROL_PLANE__cluster2__kubeconfig_path=$(tasks.kubectl-login-third-cluster.results.kubeconfig-path)'
+          value: '$(params.additional-env) KUADRANT_CONTROL_PLANE__cluster__kubeconfig_path=$(tasks.kubectl-login-second.results.kubeconfig-path) KUADRANT_CONTROL_PLANE__cluster2__kubeconfig_path=$(tasks.kubectl-login-third.results.kubeconfig-path)'
         - name: kubeconfig-path
-          value: $(tasks.kubectl-login-second-cluster.results.kubeconfig-path)
+          value: $(tasks.kubectl-login-second.results.kubeconfig-path)
         - name: cluster-credentials
           value: $(params.cluster-credentials)
       runAfter:
         - run-tests-authorino-standalone
-        - run-tests-ui
       taskRef:
         kind: Task
         name: run-tests
@@ -265,7 +499,7 @@ spec:
         - name: additional-env
           value: "$(params.additional-env) KUADRANT_CONTROL_PLANE__provider_secret=azure-credentials"
         - name: kubeconfig-path
-          value: $(tasks.kubectl-login.results.kubeconfig-path)
+          value: $(tasks.kubectl-login-first.results.kubeconfig-path)
         - name: cluster-credentials
           value: $(params.cluster-credentials)
       runAfter:
@@ -284,13 +518,13 @@ spec:
         - name: make-target
           value: disruptive
         - name: pytest-flags
-          value: "$(params.pytest-flags) --collect-resources-on-failure"
+          value: "$(params.pytest-flags) --collect-resources-on-failure --reruns=0"
         - name: settings-cm
           value: $(params.settings-cm)
         - name: additional-env
-          value: '$(params.additional-env) KUADRANT_CONTROL_PLANE__cluster__kubeconfig_path=$(tasks.kubectl-login-second-cluster.results.kubeconfig-path) KUADRANT_CONTROL_PLANE__cluster2__kubeconfig_path=$(tasks.kubectl-login-third-cluster.results.kubeconfig-path)'
+          value: '$(params.additional-env) KUADRANT_CONTROL_PLANE__cluster__kubeconfig_path=$(tasks.kubectl-login-second.results.kubeconfig-path) KUADRANT_CONTROL_PLANE__cluster2__kubeconfig_path=$(tasks.kubectl-login-third.results.kubeconfig-path)'
         - name: kubeconfig-path
-          value: $(tasks.kubectl-login-second-cluster.results.kubeconfig-path)
+          value: $(tasks.kubectl-login-second.results.kubeconfig-path)
         - name: cluster-credentials
           value: $(params.cluster-credentials)
       runAfter:
@@ -322,5 +556,50 @@ spec:
         name: rptool-upload
       workspaces:
         - name: shared-workspace
+    - name: delete-ocp-aws-first
+      when:
+        - input: $(params.cleanup)
+          operator: in
+          values: ["true"]
+        # Skip cleanup if the cluster was never provisioned (e.g. image check failed)
+        - input: $(tasks.provision-ocp-aws-first.status)
+          operator: notin
+          values: ["None"]
+      params:
+        - name: cluster-name
+          value: $(params.cluster-name)
+      taskRef:
+        kind: Task
+        name: delete-ocp-aws
+    - name: delete-ocp-aws-second
+      when:
+        - input: $(params.cleanup)
+          operator: in
+          values: ["true"]
+        # Skip cleanup if the cluster was never provisioned (e.g. image check failed)
+        - input: $(tasks.provision-ocp-aws-second.status)
+          operator: notin
+          values: ["None"]
+      params:
+        - name: cluster-name
+          value: $(params.cluster-name-second)
+      taskRef:
+        kind: Task
+        name: delete-ocp-aws
+    - name: delete-ocp-aws-third
+      when:
+        - input: $(params.cleanup)
+          operator: in
+          values: ["true"]
+        # Skip cleanup if the cluster was never provisioned (e.g. image check failed)
+        - input: $(tasks.provision-ocp-aws-third.status)
+          operator: notin
+          values: ["None"]
+      params:
+        - name: cluster-name
+          value: $(params.cluster-name-third)
+      taskRef:
+        kind: Task
+        name: delete-ocp-aws
   workspaces:
     - name: shared-workspace

@@ -20,6 +20,7 @@ resources:
   - provision-osd-gcp.yaml
   - provision-rosa.yaml
   - rosa-login.yaml
+  - setup-cluster.yaml
   - upgrade-to-latest.yaml
   - wait-for-valid-certificates.yaml
   - wait-till-osd-is-deleted.yaml

@@ -32,6 +32,11 @@ curl -fsSL -o /usr/local/bin/opm "https://github.com/operator-framework/operator
 curl -fsSL -o /usr/local/bin/cli53 "https://github.com/barnybug/cli53/releases/latest/download/cli53-linux-${ARCH}" \
     && chmod 0755 /usr/local/bin/cli53
 
+CFSSL_VERSION=$(curl -Lfs https://api.github.com/repos/cloudflare/cfssl/releases/latest | jq -r '.tag_name | ltrimstr("v")') \
+    && curl -fsSL -o /usr/local/bin/cfssl "https://github.com/cloudflare/cfssl/releases/download/v${CFSSL_VERSION}/cfssl_${CFSSL_VERSION}_linux_${ARCH}" \
+    && curl -fsSL -o /usr/local/bin/cfssljson "https://github.com/cloudflare/cfssl/releases/download/v${CFSSL_VERSION}/cfssljson_${CFSSL_VERSION}_linux_${ARCH}" \
+    && chmod 0755 /usr/local/bin/cfssl /usr/local/bin/cfssljson
+
 GO_VERSION=$(curl -Lfs 'https://go.dev/VERSION?m=text' | head -n1) \
     && curl -Lfs "https://go.dev/dl/${GO_VERSION}.linux-${ARCH}.tar.gz" | \
     tar -xz -f - -C /usr/local \
@@ -50,5 +55,3 @@ curl -LSs -o awscli.zip "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARC
 rpm --import https://packages.microsoft.com/keys/microsoft.asc \
     && rpm -Uvh https://packages.microsoft.com/config/rhel/9.0/packages-microsoft-prod.rpm \
     && microdnf -y install azure-cli
-
-python3.11 -m pip install --no-cache-dir git+https://github.com/Kuadrant/osia.git

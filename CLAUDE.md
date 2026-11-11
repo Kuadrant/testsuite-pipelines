@@ -27,6 +27,7 @@ Pipelines are grouped by purpose in the `pipelines/` directory:
 
 - **`pipelines/infra/`** - Cluster provisioning/deletion pipelines
   - `delete-aro/`, `delete-osd/`, `delete-rosa/` - Cleanup pipelines for different cluster types
+  - `delete-ocp-aws/` - Delete a leftover (uncleaned) AWS OCP cluster provisioned via osia
 
 - **`pipelines/misc/`** - Other pipelines
   - `dast/` - rapiDAST security scanning pipeline
@@ -51,6 +52,7 @@ Reusable Tekton tasks in the `tasks/` directory:
   - `provision-*.yaml` - Cluster provisioning for ARO, EKS, OCP-on-AWS, OSD (AWS/GCP), ROSA
   - `delete-*.yaml` - Cluster deletion tasks
   - `setup-eks.yaml` - Install Kuadrant, its dependencies and testing tools on an EKS cluster
+  - `setup-cluster.yaml` - Clone cluster-setup-tools from gitolite, run its setup script against a freshly provisioned cluster, then wait for cluster operators to stabilize
   - `helm-uninstall.yaml` - Full Helm teardown of Kuadrant instances, operators and tools
   - `upgrade-to-latest.yaml` - Upgrade Kuadrant/RHCL to the latest version via OLM
   - `prepare-for-rhcl-rc-install.yaml` - Prepare a cluster for RHCL release candidate installation
@@ -72,7 +74,7 @@ Reusable Tekton tasks in the `tasks/` directory:
 
 1. **Shared Workspace Pattern**: Pipelines use a shared workspace PVC to pass data between tasks (kubeconfigs, test results, etc.)
 
-2. **Multi-cluster Testing**: The nightly pipeline logs into two clusters and passes kubeconfig paths between tasks for multi-cluster and standalone Authorino testing
+2. **Multi-cluster Testing**: The nightly pipeline provisions three AWS OCP clusters via osia (then sets them up, logs in, and deploys Kuadrant on each), passing per-cluster kubeconfig paths between tasks for multi-cluster and standalone Authorino testing
 
 3. **Helm-based Deployment**: Uses the official Kuadrant Helm charts from https://kuadrant.io/helm-charts-olm with a two-phase approach:
    - Install operators first (`tools-operators`, `kuadrant-operators`)
@@ -179,7 +181,7 @@ When modifying pipelines or tasks:
 
 - The nightly pipeline runs tests sequentially across multiple make targets and clusters
 - The `helm-deploy` task performs a full cleanup (uninstall) before installing to ensure clean state
-- Multi-cluster tests require two cluster logins (primary and secondary) with kubeconfigs stored in the shared workspace
+- Multi-cluster tests require multiple clusters, each with a per-cluster kubeconfig stored in the shared workspace; the nightly pipeline provisions these automatically and cleans them up in a `finally` block (controlled by the `cleanup` param, and skipped if a cluster was never provisioned)
 - Test results are always saved to the shared workspace volume on the cluster, even if upload to ReportPortal is disabled
 - For release testing, use launch names like `kuadrant-v1.2.0` and the `releases` ReportPortal project
 - The testsuite image is maintained in a separate repository and consumed here
