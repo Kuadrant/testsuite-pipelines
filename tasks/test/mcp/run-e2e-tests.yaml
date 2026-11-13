@@ -186,7 +186,7 @@ spec:
             \"value\": {
               \"name\": \"tool-discovery\",
               \"hostname\": \"*.tool-discovery.$E2E_DOMAIN\",
-              \"port\": 8080,
+              \"port\": 8085,
               \"protocol\": \"HTTP\",
               \"allowedRoutes\": {\"namespaces\": {\"from\": \"All\"}}
             }
@@ -208,7 +208,7 @@ spec:
               kind: Service
               name: mcp-gateway-${GATEWAY_CLASS_NAME}
             port:
-              targetPort: mcps
+              targetPort: tool-discovery
             tls:
               termination: edge
               insecureEdgeTerminationPolicy: Redirect
