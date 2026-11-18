@@ -23,10 +23,6 @@ spec:
       description: Name of the Openshift project
       name: project
       type: string
-    - default: all
-      description: Makefile target for tests (doesn't affect nightly/release pipelines, kept for compatibility)
-      name: make-target
-      type: string
     - default: ""
       description: Pytest flags to use with Make (flags="${pytest-flags}" make kuadrant)
       name: pytest-flags
