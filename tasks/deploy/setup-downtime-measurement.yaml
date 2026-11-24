@@ -1,0 +1,222 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: setup-downtime-measurement
+spec:
+  description: Create a backend and protected HTTP route to measure downtime during upgrades
+  params:
+    - name: kubeconfig-path
+      description: Path to workspace kubeconfig
+      type: string
+    - name: istio-provider
+      description: Istio provider (ossm3 or ocp)
+      type: string
+  workspaces:
+    - name: shared-workspace
+  steps:
+    - name: setup-downtime-measurement
+      image: quay.io/kuadrant/testsuite-pipelines-tools:latest
+      imagePullPolicy: Always
+      computeResources:
+        limits:
+          cpu: '100m'
+          memory: 128Mi
+      env:
+        - name: KUBECONFIG
+          value: $(params.kubeconfig-path)
+        - name: ISTIO_PROVIDER
+          value: $(params.istio-provider)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        gateway_namespace=gateway-system
+        case "$ISTIO_PROVIDER" in
+          ossm3)
+            gateway_class=istio
+            ;;
+          ocp)
+            gateway_class=openshift-default
+            ;;
+          *)
+            echo "Unsupported Istio provider: $ISTIO_PROVIDER" >&2
+            exit 1
+            ;;
+        esac
+
+        kubectl apply -f - <<EOF
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: downtime-measurement
+        ---
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: ${gateway_namespace}
+        ---
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: Gateway
+        metadata:
+          name: downtime-measurement
+          namespace: ${gateway_namespace}
+          labels:
+            kuadrant.io/gateway: "true"
+        spec:
+          gatewayClassName: ${gateway_class}
+          listeners:
+            - name: http
+              protocol: HTTP
+              port: 80
+              allowedRoutes:
+                namespaces:
+                  from: Selector
+                  selector:
+                    matchLabels:
+                      kubernetes.io/metadata.name: downtime-measurement
+        ---
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: httpbin
+          namespace: downtime-measurement
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: httpbin
+          template:
+            metadata:
+              labels:
+                app: httpbin
+            spec:
+              enableServiceLinks: false
+              containers:
+                - name: httpbin
+                  image: quay.io/rhn_support_azgabur/httpbin:latest
+                  ports:
+                    - containerPort: 8080
+                      name: http
+                  readinessProbe:
+                    httpGet:
+                      path: /get
+                      port: http
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: httpbin
+          namespace: downtime-measurement
+        spec:
+          selector:
+            app: httpbin
+          ports:
+            - name: http
+              port: 80
+              targetPort: http
+        ---
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: HTTPRoute
+        metadata:
+          name: httpbin
+          namespace: downtime-measurement
+        spec:
+          parentRefs:
+            - name: downtime-measurement
+              namespace: ${gateway_namespace}
+          hostnames: ["*.httpbin.com"]
+          rules:
+            - matches:
+                - path:
+                    type: PathPrefix
+                    value: /get
+              backendRefs:
+                - name: httpbin
+                  port: 80
+        ---
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: httpbin-apikey
+          namespace: downtime-measurement
+          labels:
+            app: downtime-measurement-httpbin
+            authorino.kuadrant.io/managed-by: authorino
+          annotations:
+            secret.kuadrant.io/user-id: alice
+        type: Opaque
+        stringData:
+          api_key: IAMALICE
+        ---
+        apiVersion: kuadrant.io/v1
+        kind: AuthPolicy
+        metadata:
+          name: httpbin
+          namespace: downtime-measurement
+        spec:
+          targetRef:
+            group: gateway.networking.k8s.io
+            kind: HTTPRoute
+            name: httpbin
+          rules:
+            authentication:
+              apikey:
+                apiKey:
+                  allNamespaces: true
+                  selector:
+                    matchLabels:
+                      app: downtime-measurement-httpbin
+                credentials:
+                  authorizationHeader:
+                    prefix: APIKEY
+        ---
+        apiVersion: kuadrant.io/v1
+        kind: RateLimitPolicy
+        metadata:
+          name: httpbin
+          namespace: downtime-measurement
+        spec:
+          targetRef:
+            group: gateway.networking.k8s.io
+            kind: HTTPRoute
+            name: httpbin
+          limits:
+            global:
+              rates:
+              # Limit is high not to affect downtime measurement while validating that existing RLP does not block upgrade.
+                - limit: 1000
+                  window: 10s
+        EOF
+
+        kubectl rollout status deployment/httpbin -n downtime-measurement --timeout=300s
+        kubectl wait gateway/downtime-measurement -n "$gateway_namespace" --for=condition=Programmed --timeout=300s
+        kubectl wait authpolicy/httpbin ratelimitpolicy/httpbin -n downtime-measurement --for=condition=Enforced --timeout=300s
+
+        kubectl wait gateway/downtime-measurement -n "$gateway_namespace" --for=jsonpath='{.status.addresses[0].value}' --timeout=300s
+        gateway_host=$(kubectl get gateway/downtime-measurement -n "$gateway_namespace" -o jsonpath='{.status.addresses[0].value}')
+        gateway_port=$(kubectl get gateway/downtime-measurement -n "$gateway_namespace" -o jsonpath='{.spec.listeners[?(@.name=="http")].port}')
+        # IPv6 addresses must be enclosed in brackets in URLs.
+        if [[ "$gateway_host" == *:* ]]; then
+          gateway_host="[$gateway_host]"
+        fi
+
+        cat <<EOF
+        Access the backend through the Gateway (expect HTTP 200), or repeat during the upgrade to measure downtime:
+        curl -s --max-time 2 -o /dev/null -w '%{http_code}\n' -H 'Host: www.httpbin.com' -H 'Authorization: APIKEY IAMALICE' 'http://${gateway_host}:${gateway_port}/get'
+        EOF
+
+        for attempt in {1..120}; do
+          if http_status=$(curl -sS --max-time 2 -o /dev/null -w '%{http_code}' \
+            -H 'Host: www.httpbin.com' -H 'Authorization: APIKEY IAMALICE' \
+            "http://${gateway_host}:${gateway_port}/get") && [[ "$http_status" == 200 ]]; then
+            echo "Downtime measurement endpoint is ready (HTTP 200)."
+            break
+          fi
+
+          echo "Endpoint probe attempt ${attempt}/120 failed (HTTP ${http_status:-unavailable})." >&2
+          if [[ "$attempt" == 120 ]]; then
+            echo "WARNING: Downtime measurement endpoint did not become ready. Continuing anyway." >&2
+            break
+          fi
+          sleep 2
+        done
