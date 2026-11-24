@@ -412,6 +412,20 @@ spec:
       workspaces:
         - name: shared-workspace
           workspace: shared-workspace
+    - name: setup-downtime-measurement
+      params:
+        - name: kubeconfig-path
+          value: $(tasks.kubectl-login.results.kubeconfig-path)
+        - name: istio-provider
+          value: $(params.istio-provider)
+      runAfter:
+        - do-custom-updates
+      taskRef:
+        kind: Task
+        name: setup-downtime-measurement
+      workspaces:
+        - name: shared-workspace
+          workspace: shared-workspace
     - name: run-tests-pre-upgrade
       params:
         - name: testsuite-image
@@ -431,7 +445,7 @@ spec:
         - name: cluster-credentials
           value: $(tasks.get-osd-credentials.results.credentials-secret)
       runAfter:
-        - do-custom-updates
+        - setup-downtime-measurement
       taskRef:
         kind: Task
         name: run-tests
